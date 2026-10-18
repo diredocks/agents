@@ -34,7 +34,7 @@ import {
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
+	if (count < 999_500) return `${Math.round(count / 1000)}k`;
 	if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
 	return `${Math.round(count / 1_000_000)}M`;
 }
@@ -127,6 +127,11 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("turn_end", () => refreshDirty?.());
 
+	pi.on("session_shutdown", () => {
+		currentTui = undefined;
+		refreshDirty = undefined;
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
@@ -148,12 +153,12 @@ export default function (pi: ExtensionAPI) {
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			currentTui = tui;
-			const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
 
 			// --- git dirty marker (ys-style ✗) ---
 			let dirty = false;
 			let checkingDirty = false;
 			let lastDirtyCheck = 0;
+			let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 			const DIRTY_CHECK_INTERVAL_MS = 1000;
 
 			const checkDirty = (force: boolean): void => {
@@ -180,7 +185,16 @@ export default function (pi: ExtensionAPI) {
 					});
 			};
 
-			const refresh = (): void => checkDirty(true);
+			const refresh = (): void => {
+				if (refreshTimer) return;
+				refreshTimer = setTimeout(() => {
+					refreshTimer = undefined;
+					checkDirty(true);
+				}, 100);
+			};
+			// A branch switch can change the dirty state; force a check instead of
+			// waiting for the next periodic render.
+			const unsubscribe = footerData.onBranchChange(() => checkDirty(true));
 			refreshDirty = refresh;
 			checkDirty(true);
 
@@ -225,8 +239,9 @@ export default function (pi: ExtensionAPI) {
 								entry.message.usage.input +
 								entry.message.usage.cacheRead +
 								entry.message.usage.cacheWrite;
-							totals.cacheHitRate =
-								prompt > 0 ? (entry.message.usage.cacheRead / prompt) * 100 : undefined;
+							if (prompt > 0) {
+								totals.cacheHitRate = (entry.message.usage.cacheRead / prompt) * 100;
+							}
 						} else if (entry.message.role === "toolResult" && entry.message.usage) {
 							addUsage(entry.message.usage);
 						}
@@ -245,6 +260,10 @@ export default function (pi: ExtensionAPI) {
 			return {
 				dispose: () => {
 					unsubscribe();
+					if (refreshTimer) {
+						clearTimeout(refreshTimer);
+						refreshTimer = undefined;
+					}
 					if (refreshDirty === refresh) refreshDirty = undefined;
 				},
 				invalidate() {},

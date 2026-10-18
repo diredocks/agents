@@ -9,7 +9,7 @@
  * one that works wins:
  *   - macOS:   osascript (Notification Center)
  *   - Windows: PowerShell toast (also WSL, detected via WT_SESSION)
- *   - Linux:   notify-send -> freedesktop D-Bus (dbus-send) -> qdbus
+ *   - Linux:   notify-send -> freedesktop D-Bus (dbus-send) -> busctl
  *   - Fallback: terminal OSC 777 / 99 escape sequences
  *
  * Commands:
@@ -25,14 +25,15 @@
 
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const APP_NAME = "Pi";
 const EXEC_TIMEOUT_MS = 4000;
 const NOTIFY_TIMEOUT_MS = 5000;
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "desktop-notify.json");
+/** Do not retry a completely unavailable backend set on every run. */
+const BACKEND_RETRY_MS = 60_000;
+const CONFIG_PATH = join(getAgentDir(), "desktop-notify.json");
 
 /** Run a command without blocking; resolve on success, reject on failure. */
 function run(file: string, args: string[]): Promise<void> {
@@ -121,36 +122,42 @@ function dbusSendBackend(): Backend {
 	};
 }
 
-/** qdbus fallback for KDE environments without dbus-send. */
-function qdbusBackend(): Backend {
+/** busctl fallback (systemd) for Linux desktops without notify-send/dbus-send. */
+function busctlBackend(): Backend {
 	return {
-		name: "qdbus",
+		name: "busctl",
 		send: (title, body) =>
-			run("qdbus", [
+			run("busctl", [
+				"--user",
+				"call",
 				"org.freedesktop.Notifications",
 				"/org/freedesktop/Notifications",
-				"org.freedesktop.Notifications.Notify",
+				"org.freedesktop.Notifications",
+				"Notify",
+				"susssasa{sv}i",
 				APP_NAME,
 				"0",
 				"",
 				title,
 				body,
-				"",
+				"0",
+				"0",
 				String(NOTIFY_TIMEOUT_MS),
 			]),
 	};
 }
 
-/** Terminal OSC escape sequence, used when no GUI notifier is available. */
+/** Terminal OSC escape sequence, used only when a TUI owns stdout. */
 function terminalNotify(title: string, body: string): void {
+	const clean = (text: string) => text.replace(/[\x00-\x1f\x7f;]/g, " ");
 	try {
 		if (process.env.KITTY_WINDOW_ID) {
 			// Kitty OSC 99
-			process.stdout.write(`\x1b]99;i=1:d=0;${title}\x1b\\`);
-			process.stdout.write(`\x1b]99;i=1:p=body;${body}\x1b\\`);
+			process.stdout.write(`\x1b]99;i=1:d=0;${clean(title)}\x1b\\`);
+			process.stdout.write(`\x1b]99;i=1:p=body;${clean(body)}\x1b\\`);
 		} else {
 			// OSC 777: Ghostty / iTerm2 / WezTerm / rxvt-unicode
-			process.stdout.write(`\x1b]777;notify;${title};${body}\x07`);
+			process.stdout.write(`\x1b]777;notify;${clean(title)};${clean(body)}\x07`);
 		}
 	} catch {
 		// Ignore: fail silently when the terminal is not writable.
@@ -168,7 +175,7 @@ function candidateBackends(): Backend[] {
 		case "win32":
 			return [windowsBackend()];
 		case "linux":
-			return [notifySendBackend(), dbusSendBackend(), qdbusBackend()];
+			return [notifySendBackend(), dbusSendBackend(), busctlBackend()];
 		default:
 			return [];
 	}
@@ -189,7 +196,7 @@ function loadConfig(): Config {
 
 function saveConfig(config: Config): void {
 	try {
-		mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
+		mkdirSync(getAgentDir(), { recursive: true });
 		writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 	} catch {
 		// Ignore: fall back to an in-memory toggle in read-only environments.
@@ -213,24 +220,35 @@ export default function (pi: ExtensionAPI) {
 
 	// Cache the first backend that succeeds instead of retrying from the top.
 	let activeBackend: Backend | undefined;
+	let unavailableUntil = 0;
 	let runStartedAt: number | undefined;
 
 	/** Send a notification; returns whether a GUI backend delivered it. */
-	async function deliver(title: string, body: string): Promise<boolean> {
-		const backends = activeBackend ? [activeBackend, ...candidateBackends()] : candidateBackends();
+	async function deliver(title: string, body: string, allowTerminal: boolean): Promise<boolean> {
+		if (Date.now() < unavailableUntil) {
+			if (allowTerminal) terminalNotify(title, body);
+			return false;
+		}
+
+		const cached = activeBackend;
+		const backends = cached
+			? [cached, ...candidateBackends().filter((backend) => backend.name !== cached.name)]
+			: candidateBackends();
 
 		for (const backend of backends) {
 			try {
 				await backend.send(title, body);
 				activeBackend = backend;
+				unavailableUntil = 0;
 				return true;
 			} catch {
 				if (activeBackend === backend) activeBackend = undefined;
 			}
 		}
 
-		// No GUI backend available: fall back to a terminal notification.
-		terminalNotify(title, body);
+		// Do not retry a completely unavailable set on every run.
+		unavailableUntil = Date.now() + BACKEND_RETRY_MS;
+		if (allowTerminal) terminalNotify(title, body);
 		return false;
 	}
 
@@ -262,7 +280,8 @@ export default function (pi: ExtensionAPI) {
 		const title = event.aborted ? `${APP_NAME} · Interrupted` : `${APP_NAME} · Task complete`;
 		const body = parts.join(" · ");
 
-		await deliver(title, body);
+		// Do not hold up settlement while a notifier is missing or slow.
+		void deliver(title, body, ctx.mode === "tui");
 	});
 
 	pi.registerCommand("notify", {
@@ -286,11 +305,15 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (arg === "test") {
-				const ok = await deliver(`${APP_NAME} · Test notification`, "Desktop notifications are working ✅");
-				ctx.ui.notify(
-					ok ? `Sent (backend: ${currentBackendName()})` : "No desktop notification backend found; fell back to terminal notification",
-					ok ? "info" : "warn",
+				const ok = await deliver(
+					`${APP_NAME} · Test notification`,
+					"Desktop notifications are working ✅",
+					ctx.mode === "tui",
 				);
+				const failure = ctx.mode === "tui"
+					? "No desktop notification backend found; fell back to terminal notification"
+					: "No desktop notification backend found";
+				ctx.ui.notify(ok ? `Sent (backend: ${currentBackendName()})` : failure, ok ? "info" : "warn");
 				return;
 			}
 

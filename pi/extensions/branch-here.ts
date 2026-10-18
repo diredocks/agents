@@ -29,11 +29,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseSkillBlock } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { isUserMessageComponent, safeRenderHeight } from "../lib/tui-tree.ts";
 
 const COMMAND = "branch-here";
 const CAPTURE_WIDGET_KEY = "branch-here";
 const PATCH_STATE = Symbol.for("@branch-here/patch-state");
 const PREVIEW_LENGTH = 200;
+/** Cap how often the capture widget re-scans the whole component tree. */
+const PATCH_SCAN_INTERVAL_MS = 250;
 
 interface PatchState {
 	handle: (container: PatchableContainer, event: TuiMouseEvent) => TuiMouseEventResult | undefined;
@@ -95,22 +98,6 @@ function collectUserTargets(ctx: ExtensionContext): UserTarget[] {
 		targets.push({ id: entry.id, renderedText: skill?.userMessage ?? text });
 	}
 	return targets;
-}
-
-/** A user message renders as a Container that carries its raw text. */
-function isUserMessageComponent(node: unknown): node is Component & { text: string } {
-	if (!node || typeof node !== "object") return false;
-	const candidate = node as { text?: unknown; children?: unknown };
-	return typeof candidate.text === "string" && Array.isArray(candidate.children);
-}
-
-function safeRenderHeight(node: unknown, width: number): number {
-	try {
-		const lines = (node as Component).render(width);
-		return Array.isArray(lines) ? lines.length : 0;
-	} catch {
-		return 0;
-	}
 }
 
 /**
@@ -279,7 +266,10 @@ export default function branchHereExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	let lastPatchScan = 0;
+
 	const applyPatch = (): void => {
+		lastPatchScan = Date.now();
 		if (!tui || !currentCtx) return;
 		const root = (tui as unknown as { layoutRoot?: unknown }).layoutRoot;
 		for (const container of findClickContainers(root)) {
@@ -290,11 +280,13 @@ export default function branchHereExtension(pi: ExtensionAPI) {
 	const schedulePatch = (): void => {
 		if (installTimer) return;
 		// Run after the current render pass and after other extensions that defer
-		// their widget/editor setup.
+		// their widget/editor setup. Throttle so a busy transcript does not scan
+		// the whole component tree on every frame.
+		const delay = Math.max(0, PATCH_SCAN_INTERVAL_MS - (Date.now() - lastPatchScan));
 		installTimer = setTimeout(() => {
 			installTimer = undefined;
 			applyPatch();
-		}, 0);
+		}, delay);
 	};
 
 	pi.on("session_start", (_event, ctx) => {
@@ -338,12 +330,12 @@ export default function branchHereExtension(pi: ExtensionAPI) {
 
 	pi.on("message_end", (_event, ctx) => {
 		currentCtx = ctx;
-		applyPatch();
+		schedulePatch();
 	});
 
 	pi.on("agent_end", (_event, ctx) => {
 		currentCtx = ctx;
-		applyPatch();
+		schedulePatch();
 	});
 
 	pi.on("session_shutdown", () => {

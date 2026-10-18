@@ -28,7 +28,7 @@ import {
 	formatReadLineRange,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { homedir } from "os";
+import { homedir } from "node:os";
 
 /**
  * Shorten a path by replacing home directory with ~
@@ -53,6 +53,70 @@ function createBuiltInTools(cwd: string) {
 	};
 }
 
+interface ToolResultLike {
+	content?: Array<{ type?: string; text?: string }>;
+	isError?: boolean;
+}
+
+interface RenderOptionsLike {
+	expanded?: boolean;
+	isPartial?: boolean;
+}
+
+interface ThemeLike {
+	fg(color: string, text: string): string;
+	bold(text: string): string;
+}
+
+/** Text content of a tool result, or an empty string. */
+function resultText(result: ToolResultLike): string {
+	const part = result.content?.find((entry) => entry.type === "text" && typeof entry.text === "string");
+	return part?.text ?? "";
+}
+
+function isErrorResult(result: ToolResultLike): boolean {
+	return result.isError === true;
+}
+
+/** Built-in "No files found" / "No matches found" style messages. */
+function isNoResult(text: string): boolean {
+	return /^\s*no\b.*\b(found|matches|files|entries|results)\b/i.test(text);
+}
+
+function countNonEmptyLines(text: string): number {
+	return text
+		.trim()
+		.split("\n")
+		.filter((line) => line.trim().length > 0).length;
+}
+
+/** Show a compact error even when minimal mode hides normal output. */
+function renderError(result: ToolResultLike, theme: ThemeLike): Text {
+	const lines = resultText(result)
+		.trim()
+		.split("\n")
+		.filter((line) => line.trim().length > 0)
+		.slice(0, 3);
+	const body = lines.length > 0 ? lines : ["Error"];
+	return new Text(`\n${body.map((line) => theme.fg("error", line)).join("\n")}`, 0, 0);
+}
+
+/** Delegate expanded rendering to the built-in tool, falling back to plain text. */
+function renderExpanded(
+	base: { renderResult?: (...args: any[]) => unknown },
+	result: ToolResultLike,
+	options: RenderOptionsLike,
+	theme: ThemeLike,
+	context: unknown,
+): unknown {
+	const rendered = base.renderResult?.(result, options, theme, context);
+	if (rendered !== undefined && rendered !== null) return rendered;
+
+	const text = resultText(result).trim();
+	if (!text) return new Text("", 0, 0);
+	return new Text(`\n${text.split("\n").map((line) => theme.fg("toolOutput", line)).join("\n")}`, 0, 0);
+}
+
 export default function (pi: ExtensionAPI) {
 	const tools = createBuiltInTools(process.cwd());
 
@@ -74,21 +138,10 @@ export default function (pi: ExtensionAPI) {
 			return new Text(`${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}`, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			// Minimal mode: show nothing in collapsed state
-			if (!expanded) {
-				return new Text("", 0, 0);
-			}
-
-			// Expanded mode: show full output
-			const textContent = result.content.find((c) => c.type === "text");
-			if (!textContent || textContent.type !== "text") {
-				return new Text("", 0, 0);
-			}
-
-			const lines = textContent.text.split("\n");
-			const output = lines.map((line) => theme.fg("toolOutput", line)).join("\n");
-			return new Text(`\n${output}`, 0, 0);
+		renderResult(result, options, theme, context) {
+			if (isErrorResult(result)) return renderError(result, theme);
+			if (!options.expanded) return new Text("", 0, 0);
+			return renderExpanded(tools.read, result, options, theme, context);
 		},
 	});
 
@@ -106,29 +159,10 @@ export default function (pi: ExtensionAPI) {
 			return new Text(theme.fg("toolTitle", theme.bold(`$ ${command}`)) + timeoutSuffix, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			// Minimal mode: show nothing in collapsed state
-			if (!expanded) {
-				return new Text("", 0, 0);
-			}
-
-			// Expanded mode: show full output
-			const textContent = result.content.find((c) => c.type === "text");
-			if (!textContent || textContent.type !== "text") {
-				return new Text("", 0, 0);
-			}
-
-			const output = textContent.text
-				.trim()
-				.split("\n")
-				.map((line) => theme.fg("toolOutput", line))
-				.join("\n");
-
-			if (!output) {
-				return new Text("", 0, 0);
-			}
-
-			return new Text(`\n${output}`, 0, 0);
+		renderResult(result, options, theme, context) {
+			if (isErrorResult(result)) return renderError(result, theme);
+			if (!options.expanded) return new Text("", 0, 0);
+			return renderExpanded(tools.bash, result, options, theme, context);
 		},
 	});
 
@@ -147,21 +181,10 @@ export default function (pi: ExtensionAPI) {
 			return new Text(`${theme.fg("toolTitle", theme.bold("write"))} ${pathDisplay}${lineInfo}`, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			// Minimal mode: show nothing (file was written)
-			if (!expanded) {
-				return new Text("", 0, 0);
-			}
-
-			// Expanded mode: show error if any
-			if (result.content.some((c) => c.type === "text" && c.text)) {
-				const textContent = result.content.find((c) => c.type === "text");
-				if (textContent?.type === "text" && textContent.text) {
-					return new Text(`\n${theme.fg("error", textContent.text)}`, 0, 0);
-				}
-			}
-
-			return new Text("", 0, 0);
+		renderResult(result, options, theme, context) {
+			if (isErrorResult(result)) return renderError(result, theme);
+			if (!options.expanded) return new Text("", 0, 0);
+			return renderExpanded(tools.write, result, options, theme, context);
 		},
 	});
 
@@ -179,26 +202,10 @@ export default function (pi: ExtensionAPI) {
 			return new Text(`${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			// Minimal mode: show nothing in collapsed state
-			if (!expanded) {
-				return new Text("", 0, 0);
-			}
-
-			// Expanded mode: show diff or error
-			const textContent = result.content.find((c) => c.type === "text");
-			if (!textContent || textContent.type !== "text") {
-				return new Text("", 0, 0);
-			}
-
-			// For errors, show the error message
-			const text = textContent.text;
-			if (text.includes("Error") || text.includes("error")) {
-				return new Text(`\n${theme.fg("error", text)}`, 0, 0);
-			}
-
-			// Otherwise show the text (would be nice to show actual diff here)
-			return new Text(`\n${theme.fg("toolOutput", text)}`, 0, 0);
+		renderResult(result, options, theme, context) {
+			if (isErrorResult(result)) return renderError(result, theme);
+			if (!options.expanded) return new Text("", 0, 0);
+			return renderExpanded(tools.edit, result, options, theme, context);
 		},
 	});
 
@@ -222,32 +229,15 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			if (!expanded) {
-				// Minimal: just show count
-				const textContent = result.content.find((c) => c.type === "text");
-				if (textContent?.type === "text") {
-					const count = textContent.text.trim().split("\n").filter(Boolean).length;
-					if (count > 0) {
-						return new Text(theme.fg("muted", ` → ${count} files`), 0, 0);
-					}
-				}
-				return new Text("", 0, 0);
+		renderResult(result, options, theme, context) {
+			if (isErrorResult(result)) return renderError(result, theme);
+			if (!options.expanded) {
+				const text = resultText(result);
+				if (!text.trim() || isNoResult(text)) return new Text("", 0, 0);
+				const count = countNonEmptyLines(text);
+				return count > 0 ? new Text(theme.fg("muted", ` → ${count} files`), 0, 0) : new Text("", 0, 0);
 			}
-
-			// Expanded: show full results
-			const textContent = result.content.find((c) => c.type === "text");
-			if (!textContent || textContent.type !== "text") {
-				return new Text("", 0, 0);
-			}
-
-			const output = textContent.text
-				.trim()
-				.split("\n")
-				.map((line) => theme.fg("toolOutput", line))
-				.join("\n");
-
-			return new Text(`\n${output}`, 0, 0);
+			return renderExpanded(tools.find, result, options, theme, context);
 		},
 	});
 
@@ -275,32 +265,15 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			if (!expanded) {
-				// Minimal: just show match count
-				const textContent = result.content.find((c) => c.type === "text");
-				if (textContent?.type === "text") {
-					const count = textContent.text.trim().split("\n").filter(Boolean).length;
-					if (count > 0) {
-						return new Text(theme.fg("muted", ` → ${count} matches`), 0, 0);
-					}
-				}
-				return new Text("", 0, 0);
+		renderResult(result, options, theme, context) {
+			if (isErrorResult(result)) return renderError(result, theme);
+			if (!options.expanded) {
+				const text = resultText(result);
+				if (!text.trim() || isNoResult(text)) return new Text("", 0, 0);
+				const count = countNonEmptyLines(text);
+				return count > 0 ? new Text(theme.fg("muted", ` → ${count} matches`), 0, 0) : new Text("", 0, 0);
 			}
-
-			// Expanded: show full results
-			const textContent = result.content.find((c) => c.type === "text");
-			if (!textContent || textContent.type !== "text") {
-				return new Text("", 0, 0);
-			}
-
-			const output = textContent.text
-				.trim()
-				.split("\n")
-				.map((line) => theme.fg("toolOutput", line))
-				.join("\n");
-
-			return new Text(`\n${output}`, 0, 0);
+			return renderExpanded(tools.grep, result, options, theme, context);
 		},
 	});
 
@@ -322,32 +295,15 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			if (!expanded) {
-				// Minimal: just show entry count
-				const textContent = result.content.find((c) => c.type === "text");
-				if (textContent?.type === "text") {
-					const count = textContent.text.trim().split("\n").filter(Boolean).length;
-					if (count > 0) {
-						return new Text(theme.fg("muted", ` → ${count} entries`), 0, 0);
-					}
-				}
-				return new Text("", 0, 0);
+		renderResult(result, options, theme, context) {
+			if (isErrorResult(result)) return renderError(result, theme);
+			if (!options.expanded) {
+				const text = resultText(result);
+				if (!text.trim() || isNoResult(text)) return new Text("", 0, 0);
+				const count = countNonEmptyLines(text);
+				return count > 0 ? new Text(theme.fg("muted", ` → ${count} entries`), 0, 0) : new Text("", 0, 0);
 			}
-
-			// Expanded: show full listing
-			const textContent = result.content.find((c) => c.type === "text");
-			if (!textContent || textContent.type !== "text") {
-				return new Text("", 0, 0);
-			}
-
-			const output = textContent.text
-				.trim()
-				.split("\n")
-				.map((line) => theme.fg("toolOutput", line))
-				.join("\n");
-
-			return new Text(`\n${output}`, 0, 0);
+			return renderExpanded(tools.ls, result, options, theme, context);
 		},
 	});
 }

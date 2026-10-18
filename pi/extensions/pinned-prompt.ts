@@ -34,6 +34,7 @@ import {
 	sliceByColumn,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { collectUserMessageRows, findTranscript } from "../lib/tui-tree.ts";
 
 const CAPTURE_WIDGET_KEY = "pinned-prompt";
 const BUTTON_TEXT = " ^ ";
@@ -52,65 +53,6 @@ interface PatchableEditor extends Component {
 	children?: Component[];
 	renderTopBorder?(width: number, hiddenLineCount: number): string;
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
-}
-
-interface ScrollableComponent extends Component {
-	children: Component[];
-	readonly scrollTop: number;
-	scrollTo(top: number, options?: { disableFollow?: boolean }): void;
-	getContentWidth(width: number): number;
-}
-
-/** A user message renders as a Container that carries the raw message text. */
-function isUserMessageComponent(node: unknown): node is { children: Component[] } {
-	if (!node || typeof node !== "object") return false;
-	const candidate = node as { text?: unknown; children?: unknown };
-	return typeof candidate.text === "string" && Array.isArray(candidate.children);
-}
-
-function safeRenderHeight(node: unknown, width: number): number {
-	try {
-		const lines = (node as Component).render(width);
-		return Array.isArray(lines) ? lines.length : 0;
-	} catch {
-		return 0;
-	}
-}
-
-/** Start rows of every user message in the rendered transcript. */
-function collectUserMessageRows(root: unknown, width: number): number[] {
-	const rows: number[] = [];
-
-	const walk = (node: unknown, baseRow: number): void => {
-		if (isUserMessageComponent(node)) rows.push(baseRow);
-
-		const children = (node as { children?: unknown } | undefined)?.children;
-		if (!Array.isArray(children)) return;
-
-		let row = baseRow;
-		for (const child of children) {
-			walk(child, row);
-			row += safeRenderHeight(child, width);
-		}
-	};
-
-	walk(root, 0);
-	return rows;
-}
-
-/** First scroll view reachable from the layout root (the transcript). */
-function findScrollView(node: unknown): ScrollableComponent | undefined {
-	if (!node || typeof node !== "object") return undefined;
-	const candidate = node as { children?: unknown; scrollTo?: unknown; getContentWidth?: unknown };
-	if (typeof candidate.scrollTo === "function" && typeof candidate.getContentWidth === "function") {
-		if (Array.isArray(candidate.children)) return candidate as unknown as ScrollableComponent;
-	}
-	if (!Array.isArray(candidate.children)) return undefined;
-	for (const child of candidate.children) {
-		const found = findScrollView(child);
-		if (found) return found;
-	}
-	return undefined;
 }
 
 /** First focusable text editor in the component tree. */
@@ -142,9 +84,9 @@ function jumpToPreviousUserMessage(ctx: ExtensionContext, tui: TUI | undefined):
 		return;
 	}
 
-	const root = (tui as unknown as { layoutRoot?: unknown }).layoutRoot;
-	const scroll = findScrollView(root);
-	const document = scroll?.children[0];
+	const transcript = findTranscript(tui);
+	const scroll = transcript?.scroll;
+	const document = transcript?.document;
 	if (!scroll || !document) {
 		ctx.ui.notify("Could not find the transcript view", "warning");
 		return;
@@ -290,5 +232,8 @@ export default function (pi: ExtensionAPI) {
 			clearTimeout(installTimer);
 			installTimer = undefined;
 		}
+		tui = undefined;
+		currentCtx = undefined;
+		hasUserMessages = false;
 	});
 }

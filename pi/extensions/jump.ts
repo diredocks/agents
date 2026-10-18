@@ -33,6 +33,7 @@ import {
 	type TUI,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
+import { collectUserMessages, findTranscript } from "../lib/tui-tree.ts";
 
 const WIDGET_KEY = "jump-to-prompt";
 const MAX_RESULTS = 10;
@@ -53,84 +54,14 @@ interface JumpState {
 	selected: number;
 }
 
-/* ------------------------------------------------------------------ */
-/* Transcript inspection                                               */
-/* ------------------------------------------------------------------ */
-
-interface ScrollableComponent extends Component {
-	children: Component[];
-	readonly scrollTop: number;
-	scrollTo(top: number, options?: { disableFollow?: boolean }): void;
-	getContentWidth(width: number): number;
-}
-
-/** A user message renders as a Container that carries the raw message text. */
-function isUserMessageComponent(node: unknown): node is { text: string; children: Component[] } {
-	if (!node || typeof node !== "object") return false;
-	const candidate = node as { text?: unknown; children?: unknown };
-	return typeof candidate.text === "string" && Array.isArray(candidate.children);
-}
-
-function safeRenderHeight(node: unknown, width: number): number {
-	try {
-		const lines = (node as Component).render(width);
-		return Array.isArray(lines) ? lines.length : 0;
-	} catch {
-		return 0;
-	}
-}
-
-/** Start rows of every user message in the rendered transcript, oldest first. */
-function collectUserMessages(root: unknown, width: number): JumpItem[] {
-	const items: JumpItem[] = [];
-
-	const walk = (node: unknown, baseRow: number): void => {
-		if (isUserMessageComponent(node)) items.push({ text: node.text, row: baseRow });
-
-		const children = (node as { children?: unknown } | undefined)?.children;
-		if (!Array.isArray(children)) return;
-
-		let row = baseRow;
-		for (const child of children) {
-			walk(child, row);
-			row += safeRenderHeight(child, width);
-		}
-	};
-
-	walk(root, 0);
-	return items;
-}
-
-/** First scroll view reachable from the layout root (the transcript). */
-function findScrollView(node: unknown): ScrollableComponent | undefined {
-	if (!node || typeof node !== "object") return undefined;
-	const candidate = node as { children?: unknown; scrollTo?: unknown; getContentWidth?: unknown };
-	if (typeof candidate.scrollTo === "function" && typeof candidate.getContentWidth === "function") {
-		if (Array.isArray(candidate.children)) return candidate as unknown as ScrollableComponent;
-	}
-	if (!Array.isArray(candidate.children)) return undefined;
-	for (const child of candidate.children) {
-		const found = findScrollView(child);
-		if (found) return found;
-	}
-	return undefined;
-}
-
-function findTranscript(tui: TUI | undefined): { scroll: ScrollableComponent; document: Component } | undefined {
-	if (!tui) return undefined;
-	const root = (tui as unknown as { layoutRoot?: unknown }).layoutRoot;
-	const scroll = findScrollView(root);
-	const document = scroll?.children[0];
-	if (!scroll || !document) return undefined;
-	return { scroll, document };
-}
-
 /** User prompts of the rendered transcript, newest first. */
 function collectPrompts(tui: TUI | undefined): JumpItem[] {
 	const transcript = findTranscript(tui);
 	if (!transcript || !tui) return [];
 	const width = transcript.scroll.getContentWidth(tui.terminal.columns);
-	return collectUserMessages(transcript.document, width).reverse();
+	return collectUserMessages(transcript.document, width)
+		.map(({ text, row }) => ({ text, row }))
+		.reverse();
 }
 
 /* ------------------------------------------------------------------ */

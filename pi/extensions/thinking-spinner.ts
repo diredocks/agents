@@ -25,7 +25,6 @@
  * working indicator.
  */
 
-import { appendFileSync } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
@@ -110,10 +109,8 @@ function findThinkingComponent(tui: TUI): ThinkingLabelComponent | undefined {
 export default function (pi: ExtensionAPI) {
 	let tui: TUI | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
-	let thinkingActive = false;
-	let thinkingStartedAt: number | undefined;
-	/** Thinking text of the run currently streaming, so only that run gets the spinner. */
-	let currentThinkingText = "";
+	/** The run currently being timed, or undefined when no run is active. */
+	let run: { startedAt: number; text: string } | undefined;
 	/** The component currently being animated, so we touch only that one. */
 	let target: ThinkingLabelComponent | undefined;
 	/** Completed thinking run text -> duration, so visible blocks keep their footer. */
@@ -134,14 +131,24 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	const durationLabel = (): string | undefined => {
-		if (thinkingStartedAt === undefined) return undefined;
-		return `Thinking for ${formatThinkingDuration(Date.now() - thinkingStartedAt)}`;
+	/**
+	 * Finish the active run exactly once and return its duration. Any event that
+	 * ends the thinking stream may arrive before `thinking_end` (for example
+	 * `text_start`), so every path funnels through here instead of relying on
+	 * `thinking_end` to remember the duration.
+	 */
+	const finalizeRun = (): number | undefined => {
+		if (!run) return undefined;
+		const durationMs = Date.now() - run.startedAt;
+		if (run.text.trim()) rememberThinking(run.text, durationMs);
+		run = undefined;
+		return durationMs;
 	};
 
 	const tick = (): void => {
-		if (!thinkingActive || !tui) return;
-		const component = findThinkingComponent(tui);
+		if (!tui || !run) return;
+		// Cache the target: a full DFS every 80ms is unnecessary.
+		const component = target ?? findThinkingComponent(tui);
 		if (!component) return;
 		target = component;
 		component.setHiddenThinkingLabel(`${frame()} ${DEFAULT_LABEL}`);
@@ -149,30 +156,29 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const start = (): void => {
-		if (thinkingStartedAt === undefined) thinkingStartedAt = Date.now();
-		thinkingActive = true;
-		// Grab the newest assistant component now so a very short thinking run
-		// still reports its duration on the right message.
-		if (tui) target = findThinkingComponent(tui) ?? target;
+		// No TUI (JSON/print/RPC): nothing to animate.
+		if (!tui) return;
+		if (!run) run = { startedAt: Date.now(), text: "" };
+		if (target === undefined) target = findThinkingComponent(tui);
 		if (timer) return;
 		tick();
 		timer = setInterval(tick, INTERVAL_MS);
 	};
 
 	const stop = (): void => {
-		const wasActive = thinkingActive;
-		thinkingActive = false;
+		const wasActive = run !== undefined;
+		const durationMs = finalizeRun();
 		if (timer) {
 			clearInterval(timer);
 			timer = undefined;
 		}
+		if (!wasActive) return;
 
 		const component = target ?? (tui ? findThinkingComponent(tui) : undefined);
 		target = undefined;
-		if (!wasActive) return;
 
-		const label = durationLabel() ?? DEFAULT_LABEL;
-		thinkingStartedAt = undefined;
+		const label =
+			durationMs !== undefined ? `Thinking for ${formatThinkingDuration(durationMs)}` : DEFAULT_LABEL;
 		if (component) {
 			component.setHiddenThinkingLabel(label);
 			tui?.requestRender();
@@ -185,8 +191,7 @@ export default function (pi: ExtensionAPI) {
 	// matched by their text so they keep their footer across re-renders.
 	pi.registerMarkdownTransformer((markdown, context) => {
 		if (context.messageType !== "assistant-thinking") return markdown;
-		appendFileSync(`/tmp/thinking-debug-${process.pid}.log`, `TRANSFORM streaming=${context.isStreaming} active=${thinkingActive} current=${JSON.stringify(currentThinkingText.trim().slice(0, 40))} markdown=${JSON.stringify(markdown.trim().slice(0, 40))} keys=${JSON.stringify([...completedThinking.keys()].map((k) => k.slice(0, 40)))} match=${completedThinking.has(markdown.trim())}\n`);
-		if (context.isStreaming && thinkingActive && markdown.trim() === currentThinkingText.trim()) {
+		if (context.isStreaming && run && markdown.trim() === run.text.trim()) {
 			return `${frame()} ${markdown}`;
 		}
 
@@ -197,10 +202,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_start", (event) => {
 		if (!isAssistantMessage(event.message)) return;
-		// A new assistant message starts with a fresh spinner/label state. The
-		// previous component keeps the duration label it was given.
-		thinkingStartedAt = undefined;
-		currentThinkingText = "";
+		// Finalize any run left over from the previous message before resetting.
+		stop();
 		target = undefined;
 	});
 
@@ -209,18 +212,16 @@ export default function (pi: ExtensionAPI) {
 		const update = event.assistantMessageEvent;
 
 		if (update.type === "thinking_start" || update.type === "thinking_delta") {
-			currentThinkingText = thinkingRunText(event.message, update.contentIndex);
+			const text = thinkingRunText(event.message, update.contentIndex);
+			if (run) run.text = text;
+			else if (tui) run = { startedAt: Date.now(), text };
 			start();
 			return;
 		}
 
 		if (update.type === "thinking_end") {
-			const runText = thinkingRunText(event.message, update.contentIndex);
-			appendFileSync(`/tmp/thinking-debug-${process.pid}.log`, `END startedAt=${thinkingStartedAt} runText=${JSON.stringify(runText.slice(0, 60))} len=${runText.length}\n`);
-			currentThinkingText = runText;
-			if (thinkingStartedAt !== undefined) {
-				rememberThinking(runText, Date.now() - thinkingStartedAt);
-			}
+			const text = thinkingRunText(event.message, update.contentIndex);
+			if (run) run.text = text;
 			stop();
 			return;
 		}
@@ -245,11 +246,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
-
 		stop();
-		completedThinking.clear();
 		tui = undefined;
+		completedThinking.clear();
+		if (ctx.mode !== "tui") return;
 
 		// Below-editor avoids the blank leading spacer that above-editor widgets
 		// add. The component itself is zero-height; it only captures the TUI.

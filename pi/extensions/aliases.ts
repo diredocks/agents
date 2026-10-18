@@ -25,7 +25,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 /** alias -> target command (without the leading "/"). Add your own entries. */
 const ALIASES: Record<string, string> = {
 	clear: "new",
-  exit: "quit",
+	exit: "quit",
 	// brief: "summarize", // a prompt template or skill also works
 };
 
@@ -47,8 +47,8 @@ const BUILTINS: Record<string, BuiltinRunner> = {
 			ctx.ui.notify("New session cancelled", "info");
 		}
 	},
-	compact: (args, ctx) => {
-		ctx.compact({ customInstructions: args.trim() || undefined });
+	compact: async (args, ctx) => {
+		await ctx.compact({ customInstructions: args.trim() || undefined });
 	},
 	reload: async (_args, ctx) => {
 		await ctx.reload();

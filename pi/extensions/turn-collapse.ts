@@ -40,6 +40,13 @@
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import {
+	findTranscript,
+	isAssistantMessageComponent,
+	isUserMessageComponent,
+	type LooseComponent,
+	type MessageLike,
+} from "../lib/tui-tree.ts";
 
 const WIDGET_KEY = "turn-collapse";
 
@@ -48,19 +55,36 @@ const PATCH_SYMBOL = Symbol.for("@turn-collapse/patch");
 /** Stores a hidden component's original render function while it is hidden. */
 const RENDER_SYMBOL = Symbol.for("@turn-collapse/original-render");
 
-interface MessageLike {
-	role?: string;
-	content?: Array<{ type?: string }>;
+/**
+ * The document container holds the header, the loaded-resources block, and the
+ * chat container, in that order. Look only at its direct children so nested
+ * components (for example a Markdown block inside a bash execution) can never
+ * be mistaken for the chat container.
+ */
+function findChat(tui: TUI | undefined): LooseComponent | undefined {
+	const transcript = findTranscript(tui);
+	const children = (transcript?.document as LooseComponent | undefined)?.children;
+	if (!Array.isArray(children)) return undefined;
+
+	// Once the transcript has messages, prefer the child that holds them.
+	for (const child of children) {
+		const grand = (child as LooseComponent).children;
+		if (Array.isArray(grand) && grand.some((candidate) => isUserMessageComponent(candidate))) {
+			return child as LooseComponent;
+		}
+	}
+
+	// Empty transcript: the chat container is the last container-like child.
+	for (let index = children.length - 1; index >= 0; index--) {
+		const child = children[index] as LooseComponent;
+		if (Array.isArray(child.children)) return child;
+	}
+	return undefined;
 }
 
-/** The pieces of Pi's component tree this extension relies on. */
-interface LooseComponent extends Component {
-	children?: Component[];
-	/** Private on AssistantMessageComponent, but present at runtime. */
-	lastMessage?: MessageLike;
-	/** Private on UserMessageComponent, but present at runtime. */
-	text?: string;
-}
+/* ------------------------------------------------------------------ */
+/* Types                                                               */
+/* ------------------------------------------------------------------ */
 
 interface CollapseGroup {
 	anchor: Component;
@@ -82,60 +106,8 @@ interface AnchorState {
 /* Component tree inspection                                           */
 /* ------------------------------------------------------------------ */
 
-function isUserMessage(node: unknown): boolean {
-	const candidate = node as LooseComponent | undefined;
-	return typeof candidate?.text === "string" && Array.isArray(candidate.children);
-}
-
-function isAssistantMessage(node: unknown): boolean {
-	const candidate = node as LooseComponent | undefined;
-	return candidate?.lastMessage?.role === "assistant";
-}
-
 function hasToolCalls(message: MessageLike | undefined): boolean {
 	return Array.isArray(message?.content) && message.content.some((part) => part?.type === "toolCall");
-}
-
-function findScrollView(node: unknown): LooseComponent | undefined {
-	if (!node || typeof node !== "object") return undefined;
-	const candidate = node as LooseComponent & { scrollTo?: unknown; getContentWidth?: unknown };
-	if (typeof candidate.scrollTo === "function" && typeof candidate.getContentWidth === "function") {
-		if (Array.isArray(candidate.children)) return candidate;
-	}
-	if (!Array.isArray(candidate.children)) return undefined;
-	for (const child of candidate.children) {
-		const found = findScrollView(child);
-		if (found) return found;
-	}
-	return undefined;
-}
-
-/**
- * The document container holds the header, the loaded-resources block, and the
- * chat container, in that order. Look only at its direct children so nested
- * components (for example a Markdown block inside a bash execution) can never
- * be mistaken for the chat container.
- */
-function findChat(tui: TUI | undefined): LooseComponent | undefined {
-	if (!tui) return undefined;
-	const root = (tui as unknown as { layoutRoot?: unknown }).layoutRoot;
-	const scroll = findScrollView(root);
-	const document = scroll?.children?.[0] as LooseComponent | undefined;
-	const children = document?.children;
-	if (!Array.isArray(children)) return undefined;
-
-	// Once the transcript has messages, prefer the child that holds them.
-	for (const child of children) {
-		const grand = (child as LooseComponent).children;
-		if (Array.isArray(grand) && grand.some(isUserMessage)) return child as LooseComponent;
-	}
-
-	// Empty transcript: the chat container is the last container-like child.
-	for (let index = children.length - 1; index >= 0; index--) {
-		const child = children[index] as LooseComponent;
-		if (Array.isArray(child.children)) return child;
-	}
-	return undefined;
 }
 
 /* ------------------------------------------------------------------ */
@@ -277,14 +249,14 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 
 		for (let index = 0; index < children.length; index++) {
 			const child = children[index];
-			if (isUserMessage(child)) {
+			if (isUserMessageComponent(child)) {
 				finalizeTurn();
 				turnStart = index;
 				continue;
 			}
-			if (isAssistantMessage(child)) {
+			if (isAssistantMessageComponent(child)) {
 				finalIndex = index;
-				finalMessage = (child as LooseComponent).lastMessage;
+				finalMessage = child.lastMessage;
 			}
 		}
 		finalizeTurn();

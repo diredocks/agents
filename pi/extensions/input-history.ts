@@ -71,16 +71,41 @@ function saveHistory(history: string[]): void {
 	}
 }
 
+let cachedHistory: string[] | undefined;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+const SAVE_DELAY_MS = 200;
+
+function getHistory(): string[] {
+	cachedHistory ??= loadHistory();
+	return cachedHistory;
+}
+
+function saveSoon(): void {
+	if (saveTimer) return;
+	saveTimer = setTimeout(() => {
+		saveTimer = undefined;
+		saveHistory(cachedHistory ?? []);
+	}, SAVE_DELAY_MS);
+}
+
+function flushHistory(): void {
+	if (saveTimer) {
+		clearTimeout(saveTimer);
+		saveTimer = undefined;
+	}
+	if (cachedHistory) saveHistory(cachedHistory);
+}
+
 function remember(text: string): void {
 	const entry = text.trim();
 	if (!entry) return;
 
-	const history = loadHistory();
+	const history = getHistory();
 	const existing = history.indexOf(entry);
 	if (existing !== -1) history.splice(existing, 1);
 	history.unshift(entry);
 	if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
-	saveHistory(history);
+	saveSoon();
 }
 
 function singleLine(text: string): string {
@@ -142,7 +167,7 @@ function attachHistory(editor: EditorComponent, ctx: ExtensionContext, tui: TUI)
 	// oldest persisted entries first and leave the newest on top.
 	const addToHistory = editor.addToHistory?.bind(editor);
 	if (addToHistory) {
-		for (const entry of [...loadHistory()].reverse()) addToHistory(entry);
+		for (const entry of [...getHistory()].reverse()) addToHistory(entry);
 	}
 
 	const state: SearchState = { active: false, draft: "", items: [], filtered: [], selected: 0 };
@@ -176,7 +201,7 @@ function attachHistory(editor: EditorComponent, ctx: ExtensionContext, tui: TUI)
 
 	const start = (): void => {
 		if (state.active) return;
-		const items = loadHistory();
+		const items = getHistory();
 		if (items.length === 0) return;
 
 		state.active = true;
@@ -254,7 +279,8 @@ export default function inputHistoryExtension(pi: ExtensionAPI) {
 				return;
 			}
 			if (args.trim().toLowerCase() === "clear") {
-				saveHistory([]);
+				cachedHistory = [];
+				flushHistory();
 				ctx.ui.notify("Input history cleared", "info");
 				return;
 			}
@@ -297,6 +323,7 @@ export default function inputHistoryExtension(pi: ExtensionAPI) {
 			clearTimeout(installTimer);
 			installTimer = undefined;
 		}
+		flushHistory();
 		startSearch = undefined;
 	});
 }

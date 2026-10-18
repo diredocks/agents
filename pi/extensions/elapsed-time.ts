@@ -48,7 +48,8 @@ function formatSelectedModel(ctx: ExtensionContext): string | undefined {
 /** Distinct models used by assistant responses recorded at or after `sinceIso`. */
 function collectUsedModels(ctx: ExtensionContext, sinceIso: string): string[] {
 	const models: string[] = [];
-	for (const entry of ctx.sessionManager.getEntries()) {
+	// Only the active branch matters; abandoned branches can share a timestamp.
+	for (const entry of ctx.sessionManager.getBranch()) {
 		if (entry.timestamp < sinceIso) continue;
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 
@@ -87,7 +88,8 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasUI) {
 			ctx.ui.notify(message, "info");
 		} else {
-			console.log(message);
+			// stderr keeps JSON/RPC stdout clean for structured clients.
+			process.stderr.write(`${message}\n`);
 		}
 	});
 }
