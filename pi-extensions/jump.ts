@@ -25,7 +25,14 @@
  */
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, fuzzyFilter, matchesKey, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	fuzzyFilter,
+	isKeyRelease,
+	matchesKey,
+	type TUI,
+	truncateToWidth,
+} from "@earendil-works/pi-tui";
 
 const WIDGET_KEY = "jump-to-prompt";
 const MAX_RESULTS = 10;
@@ -234,6 +241,12 @@ export default function jumpExtension(pi: ExtensionAPI) {
 
 	const handleInput = (data: string): { consume?: boolean } | undefined => {
 		if (!state.active) return undefined;
+
+		// Kitty/iTerm-style keyboard protocols report key releases in addition to
+		// presses. Terminal-input listeners run before Pi's own release filter, so
+		// swallow releases here -- otherwise every arrow key moves the selection
+		// twice and only every other item is reachable.
+		if (isKeyRelease(data)) return { consume: true };
 
 		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
 			stop();
