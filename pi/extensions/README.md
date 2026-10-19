@@ -23,5 +23,9 @@ The `@earendil-works/pi-*` packages are only needed for types; at runtime pi
 provides those modules itself.
 
 To try a single extension: `pi -e ./shell/working-elapsed.ts`.
-To load everything: `pi -e ./index.ts`, or copy this folder to
-`~/.pi/agent/extensions/` (together with `../lib/`) and run `/reload`.
+To try everything, or to load this workspace in pi, use `pi -e ./index.ts` or
+`pi install ~/Code/project/agents/pi`.
+
+This workspace is the single source of truth. Pi loads it as a local package
+(`pi install ~/Code/project/agents/pi`), so there is no copy under
+`~/.pi/agent/extensions/` and `~/.pi/agent/lib/`; run `/reload` after changes.

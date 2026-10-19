@@ -12,8 +12,10 @@
  *
  * Usage:
  *   pi -e ./extensions/index.ts
- * or copy this directory to ~/.pi/agent/extensions/ (with `../lib/` next to
- * it) and run `/reload`.
+ * or register this workspace as a local package (single source of truth,
+ * no copy under ~/.pi/agent/extensions):
+ *   pi install ~/Code/project/agents/pi
+ * then run `/reload`.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

@@ -27,6 +27,11 @@ is no need to hunt through the pi binary.
 `node_modules` is only for types; at runtime pi provides the `@earendil-works/*`
 modules itself.
 
+This workspace is registered with pi as a local package
+(`pi install ~/Code/project/agents/pi`), so pi loads it directly. There is no
+copy under `~/.pi/agent/extensions/` or `~/.pi/agent/lib/`; run `/reload` in pi
+after changing an extension.
+
 ## Commands
 
 ```sh
@@ -34,4 +39,5 @@ npm install
 npm run typecheck
 pi -e ./extensions/shell/working-elapsed.ts   # try a single extension
 pi -e ./extensions/index.ts                    # load everything
+pi install ~/Code/project/agents/pi            # register this workspace (done)
 ```
