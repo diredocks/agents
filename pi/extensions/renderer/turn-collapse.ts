@@ -23,11 +23,13 @@
  *      document container, and the chat `Container` that holds the messages.
  *   3. It walks the chat container's direct children to find turns: a user
  *      message component starts a turn, the last assistant component without
- *      tool calls ends it.
+ *      tool calls ends it. A turn that a new user message cut short (the agent
+ *      never produced a final reply) ends at its last child instead.
  *   4. Components between the two endpoints get their `render()` temporarily
  *      replaced with a zero-line renderer, so they take no space while hidden.
- *   5. The final assistant component gets `render()`/`handleMouse()` patched so
- *      it shows the hint line and toggles the group on click.
+ *   5. The anchor component (the final reply, or the turn's last child) gets
+ *      `render()`/`handleMouse()` patched so it shows the hint line and toggles
+ *      the group on click.
  *
  * This is display-only: nothing here changes the session or the model context.
  *
@@ -141,7 +143,10 @@ function setComponentHidden(component: Component, hidden: boolean): boolean {
 	return true;
 }
 
-/** Install the hint line and click handler on a group's final reply. */
+/**
+ * Install the hint line and click handler on a group's anchor: the final reply,
+ * or the turn's last child when a new user message cut the turn short.
+ */
 function installAnchor(group: CollapseGroup, getTheme: () => Theme | undefined, onChange: () => void): void {
 	const anchor = group.anchor as Component & Record<symbol, unknown>;
 	const existing = anchor[PATCH_SYMBOL] as AnchorState | undefined;
@@ -232,25 +237,36 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 
 		const result: CollapseGroup[] = [];
 		let turnStart = -1;
+		/** Index of the current turn's last child, whatever its kind. */
+		let lastIndex = -1;
 		let finalIndex = -1;
 		let finalMessage: MessageLike | undefined;
 
-		const finalizeTurn = (): void => {
+		/** `closedByUser` is true when a new user message ended the turn. */
+		const finalizeTurn = (closedByUser: boolean): void => {
 			const start = turnStart;
-			const end = finalIndex;
+			const end = lastIndex;
+			const assistantIndex = finalIndex;
 			const message = finalMessage;
 			turnStart = -1;
+			lastIndex = -1;
 			finalIndex = -1;
 			finalMessage = undefined;
 
 			if (start < 0 || end < 0 || end <= start + 1) return;
-			// A turn whose last assistant message still calls tools has no final reply.
-			if (hasToolCalls(message)) return;
 
-			const hidden = children.slice(start + 1, end);
+			// A turn whose last assistant message still calls tools has no final
+			// reply. When a new user message cut it short, anchor on its last child
+			// so the interrupted work still collapses. The trailing turn is left
+			// alone: while the agent is still working there is no group yet.
+			const hasFinalReply = assistantIndex >= 0 && !hasToolCalls(message);
+			if (!hasFinalReply && !closedByUser) return;
+			const anchorIndex = hasFinalReply ? assistantIndex : end;
+
+			const hidden = children.slice(start + 1, anchorIndex);
 			if (hidden.length === 0) return;
 
-			const anchor = children[end];
+			const anchor = children[anchorIndex];
 			const existing = groups.get(anchor);
 			const group = existing ?? { anchor, hidden, collapsed: true };
 			group.hidden = hidden;
@@ -261,16 +277,17 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		for (let index = 0; index < children.length; index++) {
 			const child = children[index];
 			if (isUserMessageComponent(child)) {
-				finalizeTurn();
+				finalizeTurn(true);
 				turnStart = index;
 				continue;
 			}
+			lastIndex = index;
 			if (isAssistantMessageComponent(child)) {
 				finalIndex = index;
 				finalMessage = child.lastMessage;
 			}
 		}
-		finalizeTurn();
+		finalizeTurn(false);
 
 		return result;
 	};
