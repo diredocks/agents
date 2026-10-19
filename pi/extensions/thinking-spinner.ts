@@ -44,9 +44,9 @@ function isAssistantMessage(message: unknown): message is AssistantMessage {
 	return (message as { role?: unknown }).role === "assistant";
 }
 
-/** `45s`, `1m 30s`, or `1h 2m 3s`. The `Thinking for ` prefix is added by the caller. */
+/** `420ms`, `45s`, `1m 30s`, or `1h 2m 3s`. The `Thinking for ` prefix is added by the caller. */
 function formatThinkingDuration(ms: number): string {
-	if (ms < 1000) return "<1s";
+	if (ms < 1000) return `${Math.round(ms)}ms`;
 
 	const totalSeconds = Math.round(ms / 1000);
 	const hours = Math.floor(totalSeconds / 3600);
