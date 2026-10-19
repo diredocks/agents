@@ -23,6 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // Imports stay in the original flat-file order (alphabetical) so module
 // evaluation order is unchanged; factories are called in the same order below.
 import aliases from "./shell/aliases.ts";
+import askCompact from "./renderer/ask-compact.ts";
 import betterFooter from "./shell/better-footer.ts";
 import branchHere from "./feature/branch-here.ts";
 import desktopNotify from "./feature/desktop-notify.ts";
@@ -38,6 +39,7 @@ import workingElapsed from "./shell/working-elapsed.ts";
 
 export default function (pi: ExtensionAPI): void {
 	aliases(pi);
+	askCompact(pi);
 	betterFooter(pi);
 	branchHere(pi);
 	desktopNotify(pi);
