@@ -34,6 +34,7 @@ import minimalMode from "./renderer/minimal-mode.ts";
 import pinnedPrompt from "./shell/pinned-prompt.ts";
 import thinkingSpinner from "./renderer/thinking-spinner.ts";
 import todoCompact from "./shell/todo-compact.ts";
+import todoRow from "./renderer/todo-row.ts";
 import turnCollapse from "./renderer/turn-collapse.ts";
 import workingElapsed from "./shell/working-elapsed.ts";
 
@@ -50,6 +51,7 @@ export default function (pi: ExtensionAPI): void {
 	pinnedPrompt(pi);
 	thinkingSpinner(pi);
 	todoCompact(pi);
+	todoRow(pi);
 	turnCollapse(pi);
 	workingElapsed(pi);
 }

@@ -9,7 +9,7 @@ Personal pi extensions. These are 100% vibe coded without any review, USE AT YOU
 | `index.ts` | Single entry point; imports every extension factory and calls it in order. Pi loads this file (and ignores the category folders, which have no `index.ts`). |
 | `shell/` | Terminal chrome and input: footer, prompt editor, history, aliases, working indicator. |
 | `feature/` | Commands, events, and behavior: session branching, notifications, elapsed time, prompt jump. |
-| `renderer/` | Transcript/tool rendering: minimal mode, thinking spinner, turn collapse. |
+| `renderer/` | Transcript/tool rendering: minimal mode, thinking spinner, turn collapse, compact ask/todo rows. |
 | `../lib/` | Shared helpers imported by extensions (`../../lib/...` from a category folder). |
 
 ## Development
