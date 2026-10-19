@@ -6,11 +6,24 @@
  * messages (the ones that only carry tool calls), every tool execution, and the
  * spacing around them. Only the user prompt and the final answer stay visible.
  *
- * The final reply gets a small dim hint line above it. Clicking anywhere on
- * the final reply expands the hidden messages again; clicking once more
- * collapses them.
- *
  * Every completed turn in the transcript is collapsed, not just the newest one.
+ *
+ * The toggle bar
+ * --------------
+ * A dim hint line sits right under the user prompt of each turn, at the top of
+ * the turn it belongs to:
+ *
+ *   > refactor the parser
+ *
+ *   ▸ 12 earlier messages hidden · click to expand
+ *
+ * Clicking the bar toggles the turn. Clicking the final reply toggles it too, so
+ * a turn that ends below the viewport can still be collapsed without scrolling.
+ *
+ * The bar behaves like CSS `position: sticky; top: 0`: while the turn is
+ * expanded and its body is scrolled past, the bar is painted over the first row
+ * of the transcript viewport (see "Sticky bar" below), so collapsing never
+ * requires scrolling back up or down to a specific message.
  *
  * How it works
  * ------------
@@ -27,9 +40,24 @@
  *      never produced a final reply) ends at its last child instead.
  *   4. Components between the two endpoints get their `render()` temporarily
  *      replaced with a zero-line renderer, so they take no space while hidden.
- *   5. The anchor component (the final reply, or the turn's last child) gets
- *      `render()`/`handleMouse()` patched so it shows the hint line and toggles
- *      the group on click.
+ *   5. The turn's user message gets `render()` patched to append the hint bar,
+ *      and the anchor (the final reply, or the turn's last child) gets
+ *      `handleMouse()` patched so a click anywhere on it toggles the turn.
+ *
+ * Sticky bar
+ * ----------
+ * The chat container's `render()` is replaced by an equivalent loop that also
+ * remembers each child's row range. With the scroll view's `scrollTop` (and the
+ * rows the document uses above the chat) the extension knows which row the
+ * viewport starts on, so it can:
+ *
+ *   - paint the hint over that row when the viewport sits inside a turn whose
+ *     own bar has already scrolled out of view (the sticky state), and
+ *   - translate a click on any bar row back to its turn, from the chat's
+ *     `handleMouse()`.
+ *
+ * The pinned bar replaces one content row instead of inserting lines, so the
+ * transcript height (and therefore the scroll position) never jumps.
  *
  * This is display-only: nothing here changes the session or the model context.
  *
@@ -42,29 +70,34 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	compositeTuiLine,
+	truncateToWidth,
+} from "@earendil-works/pi-tui";
 import {
 	findTranscript,
 	isAssistantMessageComponent,
 	isUserMessageComponent,
+	safeRenderHeight,
 	type LooseComponent,
 	type MessageLike,
 } from "../../lib/tui-tree.ts";
 
 const WIDGET_KEY = "turn-collapse";
 
-/** Marks an anchor component that already has the click/hint patch installed. */
-const PATCH_SYMBOL = Symbol.for("@turn-collapse/patch");
+/** Marks the components that already carry one of the extension's patches. */
+const START_SYMBOL = Symbol.for("@turn-collapse/start");
+const ANCHOR_SYMBOL = Symbol.for("@turn-collapse/anchor");
+const CHAT_SYMBOL = Symbol.for("@turn-collapse/chat");
 /** Stores a hidden component's original render function while it is hidden. */
 const RENDER_SYMBOL = Symbol.for("@turn-collapse/original-render");
 
-/**
- * Number of lines the hint adds above the anchor's own render (a blank line and
- * the label). Mouse coordinates arrive relative to the patched component, so
- * they must be shifted back before being handed to the original handler -- the
- * anchor's own `mouseLayout` is built from the unpadded render.
- */
-const ANCHOR_HINT_LINES = 2;
+/** The in-flow hint is a blank line plus the label. */
+const HINT_LINES = 2;
 
 /**
  * The document container holds the header, the loaded-resources block, and the
@@ -98,19 +131,48 @@ function findChat(tui: TUI | undefined): LooseComponent | undefined {
 /* ------------------------------------------------------------------ */
 
 interface CollapseGroup {
+	/** The turn's user message component; it carries the hint bar. */
+	start: Component;
 	anchor: Component;
 	hidden: Component[];
 	collapsed: boolean;
 }
 
+/** Row range of a turn's hint bar inside the chat container. */
+interface BarHit {
+	group: CollapseGroup;
+	from: number;
+	to: number;
+}
+
 /**
- * Mutable state stored on an anchor component. Kept in a symbol property so a
+ * Mutable state stored on a patched component. Kept in a symbol property so a
  * reloaded extension updates the callbacks instead of stacking another patch.
  */
-interface AnchorState {
+interface StartState {
 	group: CollapseGroup;
 	getTheme: () => Theme | undefined;
-	onChange: () => void;
+	onToggle: (group: CollapseGroup) => void;
+	originalRender: (width: number) => string[];
+	originalMouse?: (event: TuiMouseEvent) => TuiMouseEventResult | undefined;
+	/** First row of the hint bar, i.e. the height of the message's own render. */
+	barStart?: number;
+}
+
+interface AnchorState {
+	group: CollapseGroup;
+	onToggle: (group: CollapseGroup) => void;
+}
+
+interface ChatState {
+	getGroups: () => CollapseGroup[];
+	getTheme: () => Theme | undefined;
+	/** First visible row of the chat container, for the current render width. */
+	getViewportTop: (width: number) => number | undefined;
+	onToggle: (group: CollapseGroup) => void;
+	/** Filled in by every render, then used to route clicks. */
+	bars: BarHit[];
+	pinned?: { group: CollapseGroup; row: number };
 }
 
 /* ------------------------------------------------------------------ */
@@ -119,6 +181,22 @@ interface AnchorState {
 
 function hasToolCalls(message: MessageLike | undefined): boolean {
 	return Array.isArray(message?.content) && message.content.some((part) => part?.type === "toolCall");
+}
+
+/* ------------------------------------------------------------------ */
+/* The hint bar                                                        */
+/* ------------------------------------------------------------------ */
+
+function barLabel(group: CollapseGroup): string {
+	if (!group.collapsed) return "▾ click to collapse";
+	const count = group.hidden.length;
+	return `▸ ${count} earlier message${count === 1 ? "" : "s"} hidden · click to expand`;
+}
+
+function hintLines(width: number, group: CollapseGroup, theme: Theme | undefined): string[] {
+	const label = barLabel(group);
+	const text = theme ? theme.fg("dim", label) : label;
+	return ["", truncateToWidth(text, Math.max(1, width), "")];
 }
 
 /* ------------------------------------------------------------------ */
@@ -143,51 +221,193 @@ function setComponentHidden(component: Component, hidden: boolean): boolean {
 	return true;
 }
 
-/**
- * Install the hint line and click handler on a group's anchor: the final reply,
- * or the turn's last child when a new user message cut the turn short.
- */
-function installAnchor(group: CollapseGroup, getTheme: () => Theme | undefined, onChange: () => void): void {
-	const anchor = group.anchor as Component & Record<symbol, unknown>;
-	const existing = anchor[PATCH_SYMBOL] as AnchorState | undefined;
+/* ------------------------------------------------------------------ */
+/* Per-turn patches                                                    */
+/* ------------------------------------------------------------------ */
+
+/** Append the hint bar to the turn's user message and handle clicks on it. */
+function installStart(
+	group: CollapseGroup,
+	getTheme: () => Theme | undefined,
+	onToggle: (group: CollapseGroup) => void,
+): void {
+	const start = group.start as Component & Record<symbol, unknown>;
+	const existing = start[START_SYMBOL] as StartState | undefined;
 	if (existing) {
 		// Reloaded extension code: point the patch at the new group/callbacks.
 		existing.group = group;
 		existing.getTheme = getTheme;
-		existing.onChange = onChange;
+		existing.onToggle = onToggle;
 		return;
 	}
 
-	const state: AnchorState = { group, getTheme, onChange };
-	anchor[PATCH_SYMBOL] = state;
+	const state: StartState = {
+		group,
+		getTheme,
+		onToggle,
+		originalRender: group.start.render.bind(group.start),
+		originalMouse: group.start.handleMouse?.bind(group.start),
+	};
+	start[START_SYMBOL] = state;
 
-	const originalRender = group.anchor.render.bind(group.anchor);
-	const originalMouse = group.anchor.handleMouse?.bind(group.anchor);
-
-	group.anchor.render = (width: number): string[] => {
-		const lines = originalRender(width);
-		const current = anchor[PATCH_SYMBOL] as AnchorState;
-		const count = current.group.hidden.length;
-		const label = current.group.collapsed
-			? `▸ ${count} earlier message${count === 1 ? "" : "s"} hidden · click to expand`
-			: "▾ click to collapse";
-		const theme = current.getTheme();
-		return ["", theme ? theme.fg("dim", label) : label, ...lines];
+	start.render = (width: number): string[] => {
+		const current = start[START_SYMBOL] as StartState;
+		const lines = current.originalRender(width);
+		current.barStart = lines.length;
+		return [...lines, ...hintLines(width, current.group, current.getTheme())];
 	};
 
-	group.anchor.handleMouse = (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
+	// The bar lives inside this component, so handle its clicks here as well: the
+	// chat container's handler is not always the first (other extensions wrap it).
+	start.handleMouse = (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
+		const current = start[START_SYMBOL] as StartState;
+		if (
+			event.type === "click" &&
+			event.button === "left" &&
+			current.barStart !== undefined &&
+			event.y >= current.barStart
+		) {
+			current.onToggle(current.group);
+			return { handled: true };
+		}
+		return current.originalMouse?.(event);
+	};
+}
+
+/** Put the start component's own render and mouse handler back. */
+function releaseStart(component: Component): void {
+	const store = component as unknown as Record<symbol, unknown>;
+	const state = store[START_SYMBOL] as StartState | undefined;
+	if (!state) return;
+	component.render = state.originalRender;
+	if (state.originalMouse) component.handleMouse = state.originalMouse;
+	store[START_SYMBOL] = undefined;
+	component.invalidate?.();
+}
+
+/**
+ * Install the click handler on a group's anchor: the final reply, or the turn's
+ * last child when a new user message cut the turn short.
+ */
+function installAnchor(group: CollapseGroup, onToggle: (group: CollapseGroup) => void): void {
+	const anchor = group.anchor as Component & Record<symbol, unknown>;
+	const existing = anchor[ANCHOR_SYMBOL] as AnchorState | undefined;
+	if (existing) {
+		existing.group = group;
+		existing.onToggle = onToggle;
+		return;
+	}
+
+	const state: AnchorState = { group, onToggle };
+	anchor[ANCHOR_SYMBOL] = state;
+	const originalMouse = anchor.handleMouse?.bind(anchor);
+
+	anchor.handleMouse = (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
 		// Let interactive children (e.g. a thinking block) consume the click first.
-		// The hint is prepended by our render, but the original handler lays out
-		// its children from the unpadded render, so translate the coordinates.
-		const result = originalMouse?.({ ...event, y: event.y - ANCHOR_HINT_LINES });
+		const result = originalMouse?.(event);
 		if (result) return result;
 		if (event.type === "click" && event.button === "left") {
-			const current = anchor[PATCH_SYMBOL] as AnchorState;
-			current.group.collapsed = !current.group.collapsed;
-			current.onChange();
+			const current = anchor[ANCHOR_SYMBOL] as AnchorState;
+			current.onToggle(current.group);
 			return { handled: true };
 		}
 		return undefined;
+	};
+}
+
+/**
+ * Replace the chat container's render with an equivalent loop that records each
+ * child's row range, which is what makes the sticky bar (and bar clicks)
+ * possible. `Container.render` is little more than a concatenation of the
+ * children's lines, so replicating it keeps the transcript identical apart from
+ * the pinned hint.
+ */
+function installChat(chat: LooseComponent, state: ChatState): void {
+	const store = chat as unknown as Record<symbol, ChatState | undefined>;
+	const existing = store[CHAT_SYMBOL];
+	if (existing) {
+		// Reloaded extension code: refresh the callbacks, keep the last bar map.
+		existing.getGroups = state.getGroups;
+		existing.getTheme = state.getTheme;
+		existing.getViewportTop = state.getViewportTop;
+		existing.onToggle = state.onToggle;
+		return;
+	}
+	store[CHAT_SYMBOL] = state;
+
+	chat.render = (width: number): string[] => {
+		const current = store[CHAT_SYMBOL] as ChatState;
+		const children = (chat.children ?? []) as Component[];
+		const rows = new Map<Component, { start: number; height: number }>();
+		const mouseChildren: Array<{ component: Component; height: number }> = [];
+		const lines: string[] = [];
+		let row = 0;
+
+		for (const child of children) {
+			const childLines = child.render(width);
+			rows.set(child, { start: row, height: childLines.length });
+			mouseChildren.push({ component: child, height: childLines.length });
+			for (const line of childLines) lines.push(line);
+			row += childLines.length;
+		}
+		// Same bookkeeping as `Container.render`, whose work this replaces.
+		(chat as unknown as { mouseLayout?: unknown }).mouseLayout = { width, children: mouseChildren };
+
+		current.bars = [];
+		current.pinned = undefined;
+		const top = current.getViewportTop(width);
+
+		for (const group of current.getGroups()) {
+			const startRows = rows.get(group.start);
+			const anchorRows = rows.get(group.anchor);
+			if (!startRows || !anchorRows) continue;
+
+			// The hint is the last HINT_LINES lines of the user message's render.
+			const barEnd = startRows.start + startRows.height;
+			current.bars.push({ group, from: barEnd - HINT_LINES, to: barEnd });
+
+			// Sticky only while expanded: the point is to reach "collapse" from
+			// inside the body. Collapsed turns keep the bar at the turn's top.
+			if (current.pinned || group.collapsed || top === undefined) continue;
+			const turnEnd = anchorRows.start + anchorRows.height;
+			if (top < barEnd || top >= turnEnd) continue;
+			// Keep scanning: every bar must stay clickable, including the ones
+			// below the pinned turn.
+			current.pinned = { group, row: top };
+		}
+
+		const pinned = current.pinned;
+		if (pinned && pinned.row >= 0 && pinned.row < lines.length) {
+			const label = barLabel(pinned.group);
+			const theme = current.getTheme();
+			const text = theme ? theme.fg("dim", label) : label;
+			// Cover the whole row: the pinned bar hides the row it sits on
+			// instead of shifting everything below it.
+			lines[pinned.row] = compositeTuiLine(lines[pinned.row] ?? "", text, 0, width, width);
+		}
+
+		return lines;
+	};
+
+	const originalMouse = chat.handleMouse?.bind(chat);
+
+	chat.handleMouse = (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
+		const current = store[CHAT_SYMBOL] as ChatState;
+		if (event.type === "click" && event.button === "left") {
+			if (current.pinned && event.y === current.pinned.row) {
+				current.onToggle(current.pinned.group);
+				return { handled: true };
+			}
+			for (const bar of current.bars) {
+				if (event.y >= bar.from && event.y < bar.to) {
+					current.onToggle(bar.group);
+					return { handled: true };
+				}
+			}
+		}
+		// Plain containers have no child boxes of their own, so the chat container is
+		// what forwards clicks to the messages: never swallow anything but a bar hit.
+		return originalMouse?.(event);
 	};
 }
 
@@ -219,6 +439,12 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	const toggle = (group: CollapseGroup): void => {
+		group.collapsed = !group.collapsed;
+		applyGroup(group);
+		requestRender();
+	};
+
 	/**
 	 * Walk the chat container and return one group per completed turn, reusing
 	 * the existing group objects so per-turn expansion state is preserved.
@@ -232,6 +458,7 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		for (const [anchor, group] of groups) {
 			if (present.has(anchor)) continue;
 			for (const component of group.hidden) setComponentHidden(component, false);
+			releaseStart(group.start);
 			groups.delete(anchor);
 		}
 
@@ -244,7 +471,7 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 
 		/** `closedByUser` is true when a new user message ended the turn. */
 		const finalizeTurn = (closedByUser: boolean): void => {
-			const start = turnStart;
+			const startIndex = turnStart;
 			const end = lastIndex;
 			const assistantIndex = finalIndex;
 			const message = finalMessage;
@@ -253,7 +480,7 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 			finalIndex = -1;
 			finalMessage = undefined;
 
-			if (start < 0 || end < 0 || end <= start + 1) return;
+			if (startIndex < 0 || end < 0 || end <= startIndex + 1) return;
 
 			// A turn whose last assistant message still calls tools has no final
 			// reply. When a new user message cut it short, anchor on its last child
@@ -263,12 +490,17 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 			if (!hasFinalReply && !closedByUser) return;
 			const anchorIndex = hasFinalReply ? assistantIndex : end;
 
-			const hidden = children.slice(start + 1, anchorIndex);
+			const hidden = children.slice(startIndex + 1, anchorIndex);
 			if (hidden.length === 0) return;
 
+			const start = children[startIndex];
 			const anchor = children[anchorIndex];
 			const existing = groups.get(anchor);
-			const group = existing ?? { anchor, hidden, collapsed: true };
+			const group = existing ?? { start, anchor, hidden, collapsed: true };
+			// A rebuilt user message (edit, retry) replaces the component the hint was
+			// patched onto; drop the stale patch before pointing the group at the new one.
+			if (existing && existing.start !== start) releaseStart(existing.start);
+			group.start = start;
 			group.hidden = hidden;
 			if (!existing) groups.set(anchor, group);
 			result.push(group);
@@ -292,6 +524,22 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		return result;
 	};
 
+	/** First visible row of the chat container, in chat-local row numbers. */
+	const makeViewportTopGetter = (chat: LooseComponent) => (width: number): number | undefined => {
+		const transcript = findTranscript(tui);
+		const scroll = transcript?.scroll;
+		const children = (transcript?.document as LooseComponent | undefined)?.children;
+		if (!scroll || !Array.isArray(children)) return undefined;
+
+		// Rows the header and the loaded-resources block take above the chat.
+		let above = 0;
+		for (const child of children) {
+			if (child === chat) return scroll.scrollTop - above;
+			above += safeRenderHeight(child, width);
+		}
+		return undefined;
+	};
+
 	const refresh = (): boolean => {
 		if (!tui || tui.mode !== "fullscreen") return false;
 		const chat = findChat(tui);
@@ -299,8 +547,17 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		// Keep the startup retry alive until the initial transcript is rendered.
 		if (!Array.isArray(chat.children) || chat.children.length === 0) return false;
 
+		installChat(chat, {
+			getGroups: () => [...groups.values()],
+			getTheme,
+			getViewportTop: makeViewportTopGetter(chat),
+			onToggle: toggle,
+			bars: [],
+		});
+
 		for (const group of collectGroups(chat)) {
-			installAnchor(group, getTheme, () => applyGroup(group));
+			installStart(group, getTheme, toggle);
+			installAnchor(group, toggle);
 			applyGroup(group);
 		}
 		return true;
@@ -390,6 +647,7 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		}
 		for (const group of groups.values()) {
 			for (const component of group.hidden) setComponentHidden(component, false);
+			releaseStart(group.start);
 		}
 		groups.clear();
 		tui = undefined;
