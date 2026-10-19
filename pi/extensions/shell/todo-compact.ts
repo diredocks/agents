@@ -9,11 +9,11 @@
  * This extension takes over the same widget key (`rpiv-todos`) and draws one
  * line instead:
  *
- *   ● Todos 2/7 · ◐ Create DemoTodoRepository (creating the repo)   ⌄ click or alt+t
+ *   ● Todos 2/7 · ◐ Create DemoTodoRepository (creating the repo)
  *
  * Clicking the line (fullscreen mode, the default) or pressing `alt+t` expands
  * it into the full task list; the same two gestures collapse it again. The
- * collapsed line always carries the heading, the in-progress task (or the first
+ * collapsed line carries the heading, the in-progress task (or the first
  * pending one), and the counts, so nothing has to be opened to see where the
  * run stands.
  *
@@ -40,7 +40,6 @@ import {
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 	truncateToWidth,
-	visibleWidth,
 } from "@earendil-works/pi-tui";
 
 /** Widget key owned by rpiv-todo; reusing it replaces that panel. */
@@ -177,30 +176,20 @@ function taskRow(task: TodoTask, theme: Theme, showIds: boolean): string {
 	return line;
 }
 
-/** The single collapsed line, with the toggle hint pushed to the right edge. */
-function renderCompactLine(theme: Theme, tasks: readonly TodoTask[], width: number, fullscreen: boolean): string {
+/** The single collapsed line: heading plus the task currently being worked on. */
+function renderCompactLine(theme: Theme, tasks: readonly TodoTask[], width: number): string {
 	const counts = countTasks(tasks);
 	const current = tasks.find((task) => task.status === "in_progress") ?? tasks.find((task) => task.status === "pending");
 
-	let left = heading(theme, counts);
+	let line = heading(theme, counts);
 	if (current) {
 		const subject = theme.fg(current.status === "in_progress" ? "accent" : "text", sanitize(current.subject));
-		left += `${theme.fg("dim", " · ")}${statusGlyph(current.status, theme)} ${subject}`;
+		line += `${theme.fg("dim", " · ")}${statusGlyph(current.status, theme)} ${subject}`;
 		if (current.status === "in_progress" && current.activeForm) {
-			left += ` ${theme.fg("muted", `(${sanitize(current.activeForm)})`)}`;
+			line += ` ${theme.fg("muted", `(${sanitize(current.activeForm)})`)}`;
 		}
 	}
-
-	const hint = theme.fg("dim", fullscreen ? "⌄ click or alt+t" : "⌄ alt+t");
-	const hintWidth = visibleWidth(hint);
-	const maxLeft = width - hintWidth - 2;
-	// Keep the expand affordance visible even when the task subject is long: trim
-	// the left part and right-align the hint. On a very narrow terminal the hint
-	// is dropped and the line is a plain truncated summary.
-	if (maxLeft < 20) return truncateToWidth(left, width, "…");
-	const trimmed = truncateToWidth(left, maxLeft, "…");
-	const gap = Math.max(1, width - visibleWidth(trimmed) - hintWidth);
-	return trimmed + " ".repeat(gap) + hint;
+	return truncateToWidth(line, width, "…");
 }
 
 /** The expanded panel: heading, every task, and the collapse hint. */
@@ -238,7 +227,7 @@ class CompactTodoOverlay implements Component {
 		if (tasks.length === 0) return [];
 
 		const fullscreen = this.isFullscreen();
-		if (this.isCollapsed()) return [renderCompactLine(theme, tasks, width, fullscreen)];
+		if (this.isCollapsed()) return [renderCompactLine(theme, tasks, width)];
 
 		const hint = fullscreen ? "click or alt+t to collapse" : "alt+t to collapse";
 		return renderExpanded(theme, tasks, width, hint);
