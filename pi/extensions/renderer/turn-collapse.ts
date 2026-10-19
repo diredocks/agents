@@ -47,7 +47,7 @@ import {
 	isUserMessageComponent,
 	type LooseComponent,
 	type MessageLike,
-} from "../lib/tui-tree.ts";
+} from "../../lib/tui-tree.ts";
 
 const WIDGET_KEY = "turn-collapse";
 

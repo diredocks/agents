@@ -313,11 +313,11 @@ export default function (pi: ExtensionAPI) {
 				const failure = ctx.mode === "tui"
 					? "No desktop notification backend found; fell back to terminal notification"
 					: "No desktop notification backend found";
-				ctx.ui.notify(ok ? `Sent (backend: ${currentBackendName()})` : failure, ok ? "info" : "warn");
+				ctx.ui.notify(ok ? `Sent (backend: ${currentBackendName()})` : failure, ok ? "info" : "warning");
 				return;
 			}
 
-			ctx.ui.notify("Usage: /notify [on|off|test]", "warn");
+			ctx.ui.notify("Usage: /notify [on|off|test]", "warning");
 		},
 	});
 }

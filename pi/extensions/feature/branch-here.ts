@@ -29,7 +29,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseSkillBlock } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { isUserMessageComponent, safeRenderHeight } from "../lib/tui-tree.ts";
+import { isUserMessageComponent, safeRenderHeight } from "../../lib/tui-tree.ts";
 
 const COMMAND = "branch-here";
 const CAPTURE_WIDGET_KEY = "branch-here";

@@ -1,0 +1,22 @@
+{
+	"name": "pi-extensions",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Personal pi extensions (development workspace).",
+	"scripts": {
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"devDependencies": {
+		"@types/node": "^26.1.1",
+		"typescript": "^5.9.3"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

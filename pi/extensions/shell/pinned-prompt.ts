@@ -34,7 +34,7 @@ import {
 	sliceByColumn,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { collectUserMessageRows, findTranscript } from "../lib/tui-tree.ts";
+import { collectUserMessageRows, findTranscript } from "../../lib/tui-tree.ts";
 
 const CAPTURE_WIDGET_KEY = "pinned-prompt";
 const BUTTON_TEXT = " ^ ";

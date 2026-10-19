@@ -27,7 +27,7 @@ import {
 	createWriteToolDefinition,
 	formatReadLineRange,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { type Component, Text } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 
 /**
@@ -103,12 +103,12 @@ function renderError(result: ToolResultLike, theme: ThemeLike): Text {
 
 /** Delegate expanded rendering to the built-in tool, falling back to plain text. */
 function renderExpanded(
-	base: { renderResult?: (...args: any[]) => unknown },
+	base: { renderResult?: (...args: any[]) => Component | null | undefined },
 	result: ToolResultLike,
 	options: RenderOptionsLike,
 	theme: ThemeLike,
 	context: unknown,
-): unknown {
+): Component {
 	const rendered = base.renderResult?.(result, options, theme, context);
 	if (rendered !== undefined && rendered !== null) return rendered;
 

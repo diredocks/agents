@@ -33,7 +33,7 @@ import {
 	type TUI,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { collectUserMessages, findTranscript } from "../lib/tui-tree.ts";
+import { collectUserMessages, findTranscript } from "../../lib/tui-tree.ts";
 
 const WIDGET_KEY = "jump-to-prompt";
 const MAX_RESULTS = 10;
