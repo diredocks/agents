@@ -4,7 +4,7 @@
  * Adds a working-style animated spinner to the thinking block while the model
  * is streaming reasoning, then reports how long thinking took once it ends:
  *
- *   hidden thinking block:   ⠋ Thinking...        →  Thinking for 1m 30s
+ *   hidden thinking block:   ⠋ Thinking... (12s) →  Thinking for 1m 30s
  *   visible thinking block:  ⠋ <thinking text>    →  <thinking text>
  *
  *                                                     Thinking for 1m 30s
@@ -145,13 +145,20 @@ export default function (pi: ExtensionAPI) {
 		return durationMs;
 	};
 
+	/** Live label while thinking: `⠋ Thinking... (12s)`, with elapsed time appended. */
+	const liveLabel = (): string => {
+		if (!run) return `${frame()} ${DEFAULT_LABEL}`;
+		const elapsed = formatThinkingDuration(Date.now() - run.startedAt);
+		return `${frame()} ${DEFAULT_LABEL} (${elapsed})`;
+	};
+
 	const tick = (): void => {
 		if (!tui || !run) return;
 		// Cache the target: a full DFS every 80ms is unnecessary.
 		const component = target ?? findThinkingComponent(tui);
 		if (!component) return;
 		target = component;
-		component.setHiddenThinkingLabel(`${frame()} ${DEFAULT_LABEL}`);
+		component.setHiddenThinkingLabel(liveLabel());
 		tui.requestRender();
 	};
 

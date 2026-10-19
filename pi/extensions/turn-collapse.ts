@@ -158,7 +158,7 @@ function installAnchor(group: CollapseGroup, getTheme: () => Theme | undefined, 
 			? `▸ ${count} earlier message${count === 1 ? "" : "s"} hidden · click to expand`
 			: "▾ click to collapse";
 		const theme = current.getTheme();
-		return [...lines, theme ? theme.fg("dim", label) : label];
+		return ["", theme ? theme.fg("dim", label) : label, ...lines];
 	};
 
 	group.anchor.handleMouse = (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
