@@ -6,8 +6,9 @@
  * messages (the ones that only carry tool calls), every tool execution, and the
  * spacing around them. Only the user prompt and the final answer stay visible.
  *
- * The final reply gets a small dim footer. Clicking anywhere on the final reply
- * expands the hidden messages again; clicking once more collapses them.
+ * The final reply gets a small dim hint line above it. Clicking anywhere on
+ * the final reply expands the hidden messages again; clicking once more
+ * collapses them.
  *
  * Every completed turn in the transcript is collapsed, not just the newest one.
  *
@@ -54,6 +55,14 @@ const WIDGET_KEY = "turn-collapse";
 const PATCH_SYMBOL = Symbol.for("@turn-collapse/patch");
 /** Stores a hidden component's original render function while it is hidden. */
 const RENDER_SYMBOL = Symbol.for("@turn-collapse/original-render");
+
+/**
+ * Number of lines the hint adds above the anchor's own render (a blank line and
+ * the label). Mouse coordinates arrive relative to the patched component, so
+ * they must be shifted back before being handed to the original handler -- the
+ * anchor's own `mouseLayout` is built from the unpadded render.
+ */
+const ANCHOR_HINT_LINES = 2;
 
 /**
  * The document container holds the header, the loaded-resources block, and the
@@ -163,7 +172,9 @@ function installAnchor(group: CollapseGroup, getTheme: () => Theme | undefined, 
 
 	group.anchor.handleMouse = (event: TuiMouseEvent): TuiMouseEventResult | undefined => {
 		// Let interactive children (e.g. a thinking block) consume the click first.
-		const result = originalMouse?.(event);
+		// The hint is prepended by our render, but the original handler lays out
+		// its children from the unpadded render, so translate the coordinates.
+		const result = originalMouse?.({ ...event, y: event.y - ANCHOR_HINT_LINES });
 		if (result) return result;
 		if (event.type === "click" && event.button === "left") {
 			const current = anchor[PATCH_SYMBOL] as AnchorState;

@@ -5,9 +5,13 @@
  * is streaming reasoning, then reports how long thinking took once it ends:
  *
  *   hidden thinking block:   ⠋ Thinking... (12s) →  Thinking for 1m 30s
- *   visible thinking block:  ⠋ <thinking text>    →  <thinking text>
+ *   visible thinking block:  ⠋ <thinking text>    →  Thinking for 1m 30s
  *
- *                                                     Thinking for 1m 30s
+ *                                                     <thinking text>
+ *
+ * The duration is a header, not a footer, so the collapsed label stays put and
+ * clicking it expands the reasoning downward instead of pushing the label below
+ * the revealed text.
  *
  * Pi renders hidden thinking blocks as a static `Thinking...` label. The label
  * can be changed through the public UI API, but that updates every assistant
@@ -18,7 +22,7 @@
  *
  * Visible thinking blocks are handled by a Markdown transformer for
  * `assistant-thinking`, gated on the current thinking stream being active. The
- * duration is remembered per thinking run so completed blocks keep their footer
+ * duration is remembered per thinking run so completed blocks keep their header
  * across re-renders.
  *
  * The spinner uses the same braille frames and 80ms interval as pi's built-in
@@ -113,7 +117,7 @@ export default function (pi: ExtensionAPI) {
 	let run: { startedAt: number; text: string } | undefined;
 	/** The component currently being animated, so we touch only that one. */
 	let target: ThinkingLabelComponent | undefined;
-	/** Completed thinking run text -> duration, so visible blocks keep their footer. */
+	/** Completed thinking run text -> duration, so visible blocks keep their header. */
 	const completedThinking = new Map<string, number>();
 
 	const frame = (): string => FRAMES[Math.floor(Date.now() / INTERVAL_MS) % FRAMES.length] ?? FRAMES[0]!;
@@ -193,9 +197,11 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	// Visible thinking blocks: prefix the streaming thinking markdown with the
-	// current frame while it streams, then append the finished duration. Only the
-	// streaming component gets `isStreaming: true`, but completed blocks are
-	// matched by their text so they keep their footer across re-renders.
+	// current frame while it streams, then prepend the finished duration. The
+	// duration is a header so expanding a collapsed label keeps the label in place
+	// and grows the reasoning below it. Only the streaming component gets
+	// `isStreaming: true`, but completed blocks are matched by their text so they
+	// keep their header across re-renders.
 	pi.registerMarkdownTransformer((markdown, context) => {
 		if (context.messageType !== "assistant-thinking") return markdown;
 		if (context.isStreaming && run && markdown.trim() === run.text.trim()) {
@@ -204,7 +210,7 @@ export default function (pi: ExtensionAPI) {
 
 		const durationMs = completedThinking.get(markdown.trim());
 		if (durationMs === undefined) return markdown;
-		return `${markdown}\n\nThinking for ${formatThinkingDuration(durationMs)}`;
+		return `Thinking for ${formatThinkingDuration(durationMs)}\n\n${markdown}`;
 	});
 
 	pi.on("message_start", (event) => {
