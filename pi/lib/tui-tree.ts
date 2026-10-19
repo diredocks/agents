@@ -29,6 +29,10 @@ export interface LooseComponent extends Component {
 export interface ScrollableComponent extends Component {
 	children: Component[];
 	readonly scrollTop: number;
+	/** True while the scroll view pins itself to the end of the content. */
+	readonly isFollowingEnd?: boolean;
+	/** Height of the visible part of the scroll view during the last layout. */
+	readonly viewportHeight?: number;
 	scrollTo(top: number, options?: { disableFollow?: boolean }): void;
 	getContentWidth(width: number): number;
 }

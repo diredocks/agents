@@ -59,6 +59,16 @@
  * The pinned bar replaces one content row instead of inserting lines, so the
  * transcript height (and therefore the scroll position) never jumps.
  *
+ * The scroll offset read during `render()` is one frame behind: the scroll view
+ * clamps it (and follows the end while streaming) only after its child has
+ * rendered. The extension therefore predicts the offset the frame will end up
+ * using, otherwise the sticky bar can be missing until the next scroll.
+ *
+ * Toggling a turn changes the transcript height. Before the new layout exists,
+ * the extension plans how far the scroll offset has to move so the row under the
+ * viewport top stays under it, and applies that shift on the next render. This
+ * also survives a shrink clamp and makes expand/collapse repeatable.
+ *
  * This is display-only: nothing here changes the session or the model context.
  *
  * Requires fullscreen mode (the default), because regular mode leaves the
@@ -85,6 +95,7 @@ import {
 	safeRenderHeight,
 	type LooseComponent,
 	type MessageLike,
+	type ScrollableComponent,
 } from "../../lib/tui-tree.ts";
 
 const WIDGET_KEY = "turn-collapse";
@@ -136,6 +147,12 @@ interface CollapseGroup {
 	anchor: Component;
 	hidden: Component[];
 	collapsed: boolean;
+	/**
+	 * Where the viewport sat inside the body when the turn was collapsed, so a
+	 * single click can expand back to the same row. Scrolling away from that row
+	 * makes it stale, and the next toggle clears it.
+	 */
+	restoreOffset?: number;
 }
 
 /** Row range of a turn's hint bar inside the chat container. */
@@ -167,12 +184,19 @@ interface AnchorState {
 interface ChatState {
 	getGroups: () => CollapseGroup[];
 	getTheme: () => Theme | undefined;
-	/** First visible row of the chat container, for the current render width. */
-	getViewportTop: (width: number) => number | undefined;
+	/** The transcript scroll view and the rows the document uses around the chat. */
+	getScrollInfo: (width: number) => { scroll: ScrollableComponent; above: number; below: number } | undefined;
 	onToggle: (group: CollapseGroup) => void;
 	/** Filled in by every render, then used to route clicks. */
 	bars: BarHit[];
 	pinned?: { group: CollapseGroup; row: number };
+	/** Row range of every child during the last render, in chat-local rows. */
+	rows: Map<Component, { start: number; height: number }>;
+	/** Width and rows above the chat of the last render, for toggle planning. */
+	width: number;
+	above: number;
+	/** Rows the scroll offset has to move on the next render (see planScrollShift). */
+	pendingShift: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -181,6 +205,145 @@ interface ChatState {
 
 function hasToolCalls(message: MessageLike | undefined): boolean {
 	return Array.isArray(message?.content) && message.content.some((part) => part?.type === "toolCall");
+}
+
+/* ------------------------------------------------------------------ */
+/* Scroll compensation                                                 */
+/* ------------------------------------------------------------------ */
+
+/** Height a component would render at if the collapse were not hiding it. */
+function naturalHeight(component: Component, width: number, fallback: number): number {
+	const original = (component as unknown as Record<symbol, unknown>)[RENDER_SYMBOL] as
+		| ((renderWidth: number) => string[])
+		| undefined;
+	if (!original) return fallback;
+	try {
+		const lines = original(width);
+		return Array.isArray(lines) ? lines.length : fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+/**
+ * Rows the scroll offset has to move so the row under the viewport top survives
+ * a toggle. `targets` maps every turn being toggled to its state after the
+ * toggle; turns not in the map keep their current state. The result is applied
+ * by the next render, after the new heights actually exist.
+ *
+ * Afterwards the offset points at the same content as before (for rows outside
+ * the changed turn), or at the first row that replaces the hidden body. A
+ * single-turn collapse also remembers the offset inside that body, so expanding
+ * again returns to exactly the same scroll position.
+ */
+function planScrollShift(
+	chat: LooseComponent,
+	state: ChatState,
+	targets: Map<CollapseGroup, boolean>,
+): number {
+	const children = (chat.children ?? []) as Component[];
+	if (children.length === 0 || state.rows.size === 0) return 0;
+
+	const info = state.getScrollInfo(state.width);
+	if (!info) return 0;
+	const top = info.scroll.scrollTop - info.above;
+	// The viewport starts above the chat (header or resources): nothing moves.
+	if (top < 0) return 0;
+
+	// Children that will be hidden, and the turn each one belongs to.
+	const hiddenBy = new Map<Component, CollapseGroup>();
+	const collapsing = (group: CollapseGroup): boolean => targets.get(group) ?? group.collapsed;
+	for (const group of state.getGroups()) {
+		if (!collapsing(group)) continue;
+		for (const component of group.hidden) hiddenBy.set(component, group);
+	}
+
+	const heights = children.map((child) => {
+		const recorded = state.rows.get(child)?.height ?? safeRenderHeight(child, state.width);
+		// A child currently hidden by a collapse still needs its expanded height;
+		// `naturalHeight` falls back to the original render for those.
+		return {
+			child,
+			before: recorded,
+			after: hiddenBy.has(child) ? 0 : naturalHeight(child, state.width, recorded),
+		};
+	});
+
+	// New start row of every child.
+	const starts = new Map<Component, number>();
+	let totalBefore = 0;
+	let totalAfter = 0;
+	for (const entry of heights) {
+		starts.set(entry.child, totalAfter);
+		totalBefore += entry.before;
+		totalAfter += entry.after;
+	}
+
+	// A single toggle can restore the exact row it collapsed from; a bulk toggle
+	// has no single "inside" position and must not consume a stale one.
+	const single = targets.size === 1;
+	let inside: CollapseGroup | undefined;
+	for (const group of state.getGroups()) {
+		if (!collapsing(group) || !targets.has(group)) continue;
+		const start = state.rows.get(group.start);
+		const anchor = state.rows.get(group.anchor);
+		if (!start || !anchor) continue;
+		const blockStart = start.start + start.height;
+		if (top >= blockStart && top < anchor.start) inside = group;
+	}
+
+	for (const [group, collapsed] of targets) {
+		if (collapsed) {
+			if (!single || group !== inside) {
+				group.restoreOffset = undefined;
+				continue;
+			}
+			const start = state.rows.get(group.start);
+			if (start) group.restoreOffset = top - (start.start + start.height);
+			continue;
+		}
+
+		// Expanding: return to the row the collapse moved away from, but only while
+		// the viewport still sits on the row the collapse landed on.
+		const anchor = state.rows.get(group.anchor);
+		const start = state.rows.get(group.start);
+		if (single && group.restoreOffset !== undefined && anchor && start && top === anchor.start) {
+			const offset = group.restoreOffset;
+			group.restoreOffset = undefined;
+			const blockStartAfter = (starts.get(group.start) ?? 0) + start.height;
+			return blockStartAfter + offset - top;
+		}
+		group.restoreOffset = undefined;
+	}
+
+	let before = 0;
+	for (const entry of heights) {
+		if (top < before + entry.before) {
+			const group = hiddenBy.get(entry.child);
+			if (group) {
+				// The viewport is inside the body that is about to disappear: land on
+				// the row that replaces it (the anchor), keeping everything above still.
+				const startHeight = state.rows.get(group.start)?.height ?? safeRenderHeight(group.start, state.width);
+				return (starts.get(group.start) ?? 0) + startHeight - top;
+			}
+			return (starts.get(entry.child) ?? 0) + (top - before) - top;
+		}
+		before += entry.before;
+	}
+
+	// The viewport starts below the chat content: keep the distance to its end.
+	return totalBefore > 0 && top >= totalBefore ? totalAfter - totalBefore : 0;
+}
+
+/**
+ * Move the scroll offset directly instead of via `scrollTo`: the latter clamps
+ * against the content height of the previous frame, which is exactly what is
+ * stale right after expanding a turn. `ScrollView.updateLayout` runs after this
+ * render and performs the authoritative clamp.
+ */
+function forceScrollTop(scroll: ScrollableComponent, top: number): void {
+	const internal = scroll as unknown as { currentScrollTop: number; followingEnd: boolean };
+	internal.currentScrollTop = Math.max(0, Math.floor(top));
 }
 
 /* ------------------------------------------------------------------ */
@@ -329,8 +492,13 @@ function installChat(chat: LooseComponent, state: ChatState): void {
 		// Reloaded extension code: refresh the callbacks, keep the last bar map.
 		existing.getGroups = state.getGroups;
 		existing.getTheme = state.getTheme;
-		existing.getViewportTop = state.getViewportTop;
+		existing.getScrollInfo = state.getScrollInfo;
 		existing.onToggle = state.onToggle;
+		// Fields added by a later version may be missing on a reloaded patch.
+		existing.rows ??= new Map();
+		existing.width ??= 0;
+		existing.above ??= 0;
+		existing.pendingShift ??= 0;
 		return;
 	}
 	store[CHAT_SYMBOL] = state;
@@ -353,9 +521,43 @@ function installChat(chat: LooseComponent, state: ChatState): void {
 		// Same bookkeeping as `Container.render`, whose work this replaces.
 		(chat as unknown as { mouseLayout?: unknown }).mouseLayout = { width, children: mouseChildren };
 
+		current.rows = rows;
+		current.width = width;
+
+		const info = current.getScrollInfo(width);
+		const above = info?.above ?? 0;
+		current.above = above;
+		let viewportTop: number | undefined;
+
+		if (info) {
+			const scroll = info.scroll;
+			const viewportHeight = Math.max(0, Math.floor(scroll.viewportHeight ?? 0));
+			const contentHeight = above + lines.length + info.below;
+			const maxTop = Math.max(0, contentHeight - viewportHeight);
+
+			if (current.pendingShift !== 0) {
+				const target = Math.max(0, Math.min(maxTop, scroll.scrollTop + current.pendingShift));
+				forceScrollTop(scroll, target);
+				// Do not let the follow-end branch of `updateLayout` snap back to
+				// the bottom unless the shift itself lands on the new end.
+				if (target < maxTop) {
+					(scroll as unknown as { followingEnd: boolean }).followingEnd = false;
+				}
+				current.pendingShift = 0;
+			}
+
+			// `updateLayout` runs after this render and may still move the offset
+			// (follow-end while streaming, or a clamp after the content shrank).
+			// Predict the offset the frame will use, or the sticky bar is painted
+			// one frame late (and, without a scroll, not at all).
+			viewportTop = scroll.isFollowingEnd
+				? maxTop
+				: Math.max(0, Math.min(scroll.scrollTop, maxTop));
+		}
+
 		current.bars = [];
 		current.pinned = undefined;
-		const top = current.getViewportTop(width);
+		const top = viewportTop === undefined ? undefined : viewportTop - above;
 
 		for (const group of current.getGroups()) {
 			const startRows = rows.get(group.start);
@@ -383,7 +585,8 @@ function installChat(chat: LooseComponent, state: ChatState): void {
 			const text = theme ? theme.fg("dim", label) : label;
 			// Cover the whole row: the pinned bar hides the row it sits on
 			// instead of shifting everything below it.
-			lines[pinned.row] = compositeTuiLine(lines[pinned.row] ?? "", text, 0, width, width);
+			const overlay = truncateToWidth(text, Math.max(1, width), "");
+			lines[pinned.row] = compositeTuiLine(lines[pinned.row] ?? "", overlay, 0, width, width);
 		}
 
 		return lines;
@@ -439,10 +642,29 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	const toggle = (group: CollapseGroup): void => {
-		group.collapsed = !group.collapsed;
-		applyGroup(group);
+	const toggleGroups = (targets: Map<CollapseGroup, boolean>): void => {
+		const chat = tui ? findChat(tui) : undefined;
+		const state = chat
+			? (chat as unknown as Record<symbol, ChatState | undefined>)[CHAT_SYMBOL]
+			: undefined;
+		// Plan against the rows of the frame the viewer is looking at, then let the
+		// next render apply the shift once the new heights exist. A second toggle
+		// before that render has no fresh row map to plan against, so drop the
+		// queued shift instead of applying a stale one.
+		if (chat && state) {
+			state.pendingShift = state.pendingShift === 0 ? planScrollShift(chat, state, targets) : 0;
+		}
+
+		for (const [group, collapsed] of targets) {
+			if (group.collapsed === collapsed) continue;
+			group.collapsed = collapsed;
+			applyGroup(group);
+		}
 		requestRender();
+	};
+
+	const toggle = (group: CollapseGroup): void => {
+		toggleGroups(new Map([[group, !group.collapsed]]));
 	};
 
 	/**
@@ -524,20 +746,28 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		return result;
 	};
 
-	/** First visible row of the chat container, in chat-local row numbers. */
-	const makeViewportTopGetter = (chat: LooseComponent) => (width: number): number | undefined => {
+	/** The transcript scroll view, plus the rows the document uses around the chat. */
+	const makeScrollInfoGetter = (chat: LooseComponent) => (width: number):
+		| { scroll: ScrollableComponent; above: number; below: number }
+		| undefined => {
 		const transcript = findTranscript(tui);
 		const scroll = transcript?.scroll;
 		const children = (transcript?.document as LooseComponent | undefined)?.children;
 		if (!scroll || !Array.isArray(children)) return undefined;
 
-		// Rows the header and the loaded-resources block take above the chat.
 		let above = 0;
+		let below = 0;
+		let found = false;
 		for (const child of children) {
-			if (child === chat) return scroll.scrollTop - above;
-			above += safeRenderHeight(child, width);
+			if (child === chat) {
+				found = true;
+				continue;
+			}
+			const height = safeRenderHeight(child, width);
+			if (found) below += height;
+			else above += height;
 		}
-		return undefined;
+		return found ? { scroll, above, below } : undefined;
 	};
 
 	const refresh = (): boolean => {
@@ -550,9 +780,13 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 		installChat(chat, {
 			getGroups: () => [...groups.values()],
 			getTheme,
-			getViewportTop: makeViewportTopGetter(chat),
+			getScrollInfo: makeScrollInfoGetter(chat),
 			onToggle: toggle,
 			bars: [],
+			rows: new Map(),
+			width: 0,
+			above: 0,
+			pendingShift: 0,
 		});
 
 		for (const group of collectGroups(chat)) {
@@ -595,10 +829,7 @@ export default function turnCollapseExtension(pi: ExtensionAPI): void {
 			}
 			// If anything is collapsed, expand everything; otherwise collapse everything.
 			const target = !list.some((group) => group.collapsed);
-			for (const group of list) {
-				group.collapsed = target;
-				applyGroup(group);
-			}
+			toggleGroups(new Map(list.map((group) => [group, target] as const)));
 			ctx.ui.notify(target ? "Collapsed all turns" : "Expanded all turns", "info");
 		},
 	});
