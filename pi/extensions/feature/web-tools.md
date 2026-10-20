@@ -18,10 +18,12 @@ OpenCode's implementations.
   client's TLS fingerprint.
 - 5 MB response cap, 30 second default timeout, 120 second ceiling, cancellable
   with the tool's abort signal.
-- HTML is converted locally to Markdown (default), plain text, or returned as raw
-  HTML: headings, lists, links and images resolved against the URL, fenced code
-  blocks, quotes, and simple tables. Scripts, styles, `iframe`, `svg`, and
-  similar are dropped.
+- HTML is converted to Markdown by the `html2markdown` CLI (tables and
+  strikethrough plugins on), or returned as raw HTML with `format: "html"`.
+  Relative links and images are resolved against the fetched URL
+  (`--domain`), scripts, styles, `iframe`, and `noscript` are dropped, and code
+  blocks keep their fences. There is no plain-text format: `format` is
+  `markdown` (default) or `html`.
 - Images come back as image content; SVG is treated as text; non-textual MIME
   types are rejected.
 - Model-facing output stays inside pi's truncation budget (2000 lines / 50 KB).

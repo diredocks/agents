@@ -1,12 +1,12 @@
 /**
- * `webfetch` tool: download a URL and return it as markdown, text, or HTML.
+ * `webfetch` tool: download a URL and return it as markdown or HTML.
  *
  * Modelled on OpenCode's `webfetch` tool:
  * - per-format `Accept` headers with q-value fallbacks and a Chrome user agent
  * - retry with an honest user agent when Cloudflare answers a 403 challenge,
  *   because the browser UA no longer matches this client's TLS fingerprint
  * - 5 MB response cap, 30 second default timeout, 120 second ceiling
- * - HTML is converted to markdown/tables/code fences locally, images are
+ * - HTML is converted to markdown by the `html2markdown` CLI, images are
  *   returned as image content for the model
  * - the full text goes to a temp file whenever the model-facing preview is
  *   truncated
@@ -26,7 +26,7 @@ import {
 	truncateHead,
 } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
-import { htmlToMarkdown, htmlToText } from "../../lib/html.ts"
+import { htmlToMarkdown } from "../../lib/html2markdown.ts"
 import { boundOutput } from "../../lib/tool-output.ts"
 
 const DEFAULT_TIMEOUT_SECONDS = 30
@@ -35,7 +35,7 @@ const MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 const BROWSER_UA =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 
-type Format = "text" | "markdown" | "html"
+type Format = "markdown" | "html"
 
 interface FetchDetails {
 	url: string
@@ -50,8 +50,8 @@ interface FetchDetails {
 const parameters = Type.Object({
 	url: Type.String({ description: "The HTTP or HTTPS URL to fetch" }),
 	format: Type.Optional(
-		Type.Union([Type.Literal("markdown"), Type.Literal("text"), Type.Literal("html")], {
-			description: "Return format: markdown (default), text, or html",
+		Type.Union([Type.Literal("markdown"), Type.Literal("html")], {
+			description: "Return format: markdown (default) or html",
 			default: "markdown",
 		}),
 	),
@@ -68,8 +68,6 @@ function acceptHeader(format: Format): string {
 	switch (format) {
 		case "markdown":
 			return "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"
-		case "text":
-			return "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1"
 		case "html":
 			return "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1"
 	}
@@ -174,14 +172,14 @@ function renderResult(
 export const webFetchTool: ToolDefinition<typeof parameters, FetchDetails> = {
 	name: "webfetch",
 	label: "Web Fetch",
-	description: `Fetch a URL and return its content as markdown (default), text, or HTML.
+	description: `Fetch a URL and return its content as markdown (default) or HTML.
 
-Use this to read documentation, articles, changelogs, or any page the user points at. Relative links and images in HTML are resolved against the fetched URL, scripts and styles are dropped, and code blocks keep their fences.
+Use this to read documentation, articles, changelogs, or any page the user points at. HTML is converted with the local \`html2markdown\` CLI: relative links and images are resolved against the fetched URL, scripts and styles are dropped, tables and code fences are kept.
 
 Limits: 5 MB responses, ${DEFAULT_TIMEOUT_SECONDS}s default timeout (max ${MAX_TIMEOUT_SECONDS}s). Large pages are truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}; the complete output is then saved to a temp file whose path is reported in the result.
 
 Use webfetch when you already know the URL and want it fetched locally. If a page is JavaScript-rendered, bot-protected, or comes back as an empty shell, retry it with the provider fetch tool when one is available (mcp__exa__web_fetch_exa or mcp__parallel__web_fetch), which crawls server-side. Use the provider search tool (mcp__exa__web_search_exa or mcp__parallel__web_search) when you need to discover URLs.`,
-	promptSnippet: "Fetch a URL locally and return it as markdown, text, or HTML",
+	promptSnippet: "Fetch a URL locally and return it as markdown or HTML",
 	promptGuidelines: [
 		"Prefer webfetch over shell curl/wget for reading web pages so the content is converted for you",
 		"Fall back to a provider MCP fetch tool for pages that need JavaScript or block direct fetches",
@@ -237,7 +235,9 @@ Use webfetch when you already know the URL and want it fetched locally. If a pag
 		const raw = decodeBody(body, contentType)
 		const html = /html/i.test(contentType)
 		const converted =
-			format === "html" || !html ? raw : format === "markdown" ? htmlToMarkdown(raw, url.toString()) : htmlToText(raw)
+			format === "html" || !html
+				? raw
+				: await htmlToMarkdown(raw, { baseUrl: url.toString(), signal })
 
 		const bounded = converted.length === 0 ? { text: "(empty response body)" } : await boundOutput("webfetch", converted)
 
