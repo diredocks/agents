@@ -10,7 +10,7 @@ Personal pi extensions, 100% vibe coded without review. USE AT YOUR OWN RISK!
 | `extensions/shell/` | Terminal chrome and input: footer, prompt editor, history, aliases, working indicator. |
 | `extensions/feature/` | Commands, events, and behavior: session branching, notifications, elapsed time, prompt jump. |
 | `extensions/renderer/` | Transcript/tool rendering: minimal mode, thinking spinner, turn collapse, compact ask/todo rows. |
-| `lib/` | Shared helpers used by the extensions. |
+| `lib/` | Shared helpers used by the extensions: HTML→Markdown conversion and output bounding. |
 
 ## Adding an extension
 
@@ -38,6 +38,11 @@ pi install ~/Code/project/agents/pi            # register this workspace (done)
 This workspace is the single source of truth. Pi loads it as a local package, so
 there is no copy under `~/.pi/agent/extensions/` or `~/.pi/agent/lib/`; run
 `/reload` in pi after changing an extension.
+
+## Web tools
+
+See [`extensions/feature/web-tools.md`](./extensions/feature/web-tools.md) for the
+local `webfetch` tool and the Exa/Parallel MCP search setup.
 
 ## Where things are
 
