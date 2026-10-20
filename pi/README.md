@@ -10,7 +10,7 @@ Personal pi extensions, 100% vibe coded without review. USE AT YOUR OWN RISK!
 | `extensions/shell/` | Terminal chrome and input: footer, prompt editor, history, aliases, working indicator. |
 | `extensions/feature/` | Commands, events, and behavior: session branching, notifications, elapsed time, prompt jump. |
 | `extensions/renderer/` | Transcript/tool rendering: minimal mode, thinking spinner, turn collapse, compact ask/todo rows. |
-| `lib/` | Shared helpers imported as `../../lib/...` from a category folder. |
+| `lib/` | Shared helpers used by the extensions. |
 
 ## Adding an extension
 
