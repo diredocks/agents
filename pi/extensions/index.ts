@@ -36,6 +36,8 @@ import thinkingSpinner from "./renderer/thinking-spinner.ts";
 import todoCompact from "./shell/todo-compact.ts";
 import todoRow from "./renderer/todo-row.ts";
 import turnCollapse from "./renderer/turn-collapse.ts";
+import webFetch from "./feature/webfetch.ts";
+import webSearch from "./feature/websearch.ts";
 import workingElapsed from "./shell/working-elapsed.ts";
 
 export default function (pi: ExtensionAPI): void {
@@ -53,5 +55,7 @@ export default function (pi: ExtensionAPI): void {
 	todoCompact(pi);
 	todoRow(pi);
 	turnCollapse(pi);
+	webFetch(pi);
+	webSearch(pi);
 	workingElapsed(pi);
 }
