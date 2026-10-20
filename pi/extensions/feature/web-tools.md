@@ -6,7 +6,7 @@ OpenCode's implementations.
 | File | What it provides |
 | --- | --- |
 | `webfetch.ts` | The local `webfetch` tool. |
-| `websearch.ts` | Exa or Parallel search and provider-side fetching, through pi's built-in MCP support. |
+| `websearch.ts` | Exa and Parallel search and provider-side fetching, through pi's built-in MCP support. |
 
 ## `webfetch`
 
@@ -30,8 +30,8 @@ OpenCode's implementations.
 
 ## `websearch`
 
-The extension picks one provider and registers it as an MCP server with `direct`
-exposure, so the model calls that server's own tools:
+The extension registers both providers as MCP servers with `direct` exposure, so
+the model calls those servers' own tools:
 
 | Provider | Tools |
 | --- | --- |
@@ -51,14 +51,13 @@ should not be sent to a third party.
 Because the tools belong to an MCP server, `--tools`/`--exclude-tools` patterns
 are `mcp__exa__*` / `mcp__parallel__*`, not `websearch`.
 
-## Provider selection
+## Credentials
 
-No settings are involved.
+Both servers are always registered; no settings or provider switch are involved.
 
 | Variable | Effect |
 | --- | --- |
-| `PARALLEL_API_KEY` | Switches search to Parallel and is sent as a bearer token. |
+| `PARALLEL_API_KEY` | Sent to Parallel as a bearer token. |
 | `EXA_API_KEY` | Sent to Exa as `?exaApiKey=…`; without it Exa's public MCP endpoint is used. |
-| `PI_WEBSEARCH_PROVIDER` | Forces `exa` or `parallel` (handy for testing one provider). |
 
-Run `/mcp` to inspect the connection, tool list, and exposure.
+Run `/mcp` to inspect the connections, tool lists, and exposure.
