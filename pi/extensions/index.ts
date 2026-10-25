@@ -30,6 +30,7 @@ import desktopNotify from "./feature/desktop-notify.ts";
 import elapsedTime from "./feature/elapsed-time.ts";
 import inputHistory from "./shell/input-history.ts";
 import jump from "./feature/jump.ts";
+import magpie from "./feature/magpie.ts";
 import minimalMode from "./renderer/minimal-mode.ts";
 import pinnedPrompt from "./shell/pinned-prompt.ts";
 import thinkingSpinner from "./renderer/thinking-spinner.ts";
@@ -49,6 +50,7 @@ export default function (pi: ExtensionAPI): void {
 	elapsedTime(pi);
 	inputHistory(pi);
 	jump(pi);
+	magpie(pi);
 	minimalMode(pi);
 	pinnedPrompt(pi);
 	thinkingSpinner(pi);
