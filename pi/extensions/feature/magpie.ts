@@ -86,26 +86,18 @@ export default function (pi: ExtensionAPI) {
 				apiKey: {
 					name: "Magpie gateway key",
 					async login(interaction) {
-						const enteredUrl = (
-							await interaction.prompt({
-								type: "text",
-								message: "magpie gateway URL",
-								placeholder: normalizeBaseUrl(process.env[ENV_URL]) ?? DEFAULT_BASE_URL,
-							})
-						).trim();
+						const ask = async (type: "text" | "secret", message: string, placeholder: string) =>
+							(await interaction.prompt({ type, message, placeholder })).trim();
+
+						const envUrl = normalizeBaseUrl(process.env[ENV_URL]);
 						const url =
-							normalizeBaseUrl(enteredUrl) ??
-							normalizeBaseUrl(process.env[ENV_URL]) ??
+							normalizeBaseUrl(await ask("text", "magpie gateway URL", envUrl ?? DEFAULT_BASE_URL)) ??
+							envUrl ??
 							DEFAULT_BASE_URL;
 
-						const enteredKey = (
-							await interaction.prompt({
-								type: "secret",
-								message: "magpie gateway key",
-								placeholder: isLoopback(url) ? LOOPBACK_KEY : "sk-magpie-…",
-							})
-						).trim();
-						const key = enteredKey || (isLoopback(url) ? LOOPBACK_KEY : "");
+						const fallbackKey = isLoopback(url) ? LOOPBACK_KEY : "";
+						const key =
+							(await ask("secret", "magpie gateway key", fallbackKey || "sk-magpie-…")) || fallbackKey;
 						if (!key) throw new Error(`magpie: ${url} needs a gateway key`);
 
 						// Check now, so a wrong URL or key fails in the dialog
@@ -113,27 +105,21 @@ export default function (pi: ExtensionAPI) {
 						await listModels({ url, key }, interaction.signal);
 						return { type: "api_key", key, env: { [ENV_URL]: url } };
 					},
-					async check({ ctx, credential }) {
-						const gateway = await resolveGateway(credential, (name) => ctx.env(name));
-						if (!gateway) return undefined;
-						return {
-							type: "api_key",
-							source: credential ? "stored credential" : ENV_KEY,
-						};
-					},
+					// No `check`: resolving is side-effect free here, so Pi's default
+					// (configured when `resolve` returns something) is already right.
 					async resolve({ ctx, credential }) {
 						const gateway = await resolveGateway(credential, (name) => ctx.env(name));
 						if (!gateway) return undefined;
 						return {
 							auth: { apiKey: gateway.key, baseUrl: gateway.url },
-							env: { ...(credential?.env ?? {}), [ENV_URL]: gateway.url },
+							env: { ...credential?.env, [ENV_URL]: gateway.url },
 							source: credential ? "stored credential" : ENV_KEY,
 						};
 					},
 				},
 			},
 			async fetchModels(context: RefreshModelsContext) {
-				const gateway = await resolveGateway(context.credential, ambientEnv);
+				const gateway = await resolveGateway(context.credential, (name) => process.env[name]);
 				if (!gateway) return [];
 				return listModels(gateway, context.signal);
 			},
@@ -148,7 +134,7 @@ export default function (pi: ExtensionAPI) {
  */
 async function resolveGateway(
 	credential: Credential | undefined,
-	env: (name: string) => Promise<string | undefined>,
+	env: (name: string) => string | undefined | Promise<string | undefined>,
 ): Promise<Gateway | undefined> {
 	const stored = credential?.type === "api_key" ? credential : undefined;
 	const key = stored?.key ?? (await env(ENV_KEY))?.trim();
@@ -160,17 +146,14 @@ async function resolveGateway(
 	return { url, key };
 }
 
-function ambientEnv(name: string): Promise<string | undefined> {
-	return Promise.resolve(process.env[name]);
-}
-
 async function listModels(gateway: Gateway, signal: AbortSignal | undefined): Promise<Model<Api>[]> {
 	const url = `${gateway.url}/models`;
+	const timeout = AbortSignal.timeout(DISCOVERY_TIMEOUT_MS);
 	let response: Response;
 	try {
 		response = await fetch(url, {
 			headers: { Authorization: `Bearer ${gateway.key}`, Accept: "application/json" },
-			signal: abortWithTimeout(signal, DISCOVERY_TIMEOUT_MS),
+			signal: AbortSignal.any(signal ? [signal, timeout] : [timeout]),
 		});
 	} catch (error) {
 		if (signal?.aborted) throw error;
@@ -185,17 +168,14 @@ async function listModels(gateway: Gateway, signal: AbortSignal | undefined): Pr
 	}
 
 	const payload = (await response.json()) as { data?: MagpieModel[] };
-	const models: Model<Api>[] = [];
-	const seen = new Set<string>();
+	const models = new Map<string, Model<Api>>();
 	for (const entry of payload?.data ?? []) {
 		const model = toModel(entry, gateway.url);
 		// First id wins: magpie lists provider/model ids before its optional
 		// bare aliases, and both spellings point at the same model.
-		if (!model || seen.has(model.id)) continue;
-		seen.add(model.id);
-		models.push(model);
+		if (model && !models.has(model.id)) models.set(model.id, model);
 	}
-	return models;
+	return [...models.values()];
 }
 
 function toModel(entry: MagpieModel, baseUrl: string): Model<Api> | null {
@@ -207,12 +187,12 @@ function toModel(entry: MagpieModel, baseUrl: string): Model<Api> | null {
 	// magpie flags non-chat entries (image, decision) with a kind.
 	if (entry.kind && entry.kind !== "model") return null;
 
-	const modalities = entry.modalities?.input;
-	if (Array.isArray(modalities) && modalities.length > 0 && !modalities.includes("text")) return null;
+	const input = entry.modalities?.input;
+	if (input?.length && !input.includes("text")) return null;
 
 	const levels = reasoningLevels(entry);
 	const reasoning = entry.reasoning ?? levels.length > 0;
-	const window =
+	const contextWindow =
 		positive(entry.context_window) ?? positive(entry.context_length) ?? positive(entry.max_input_tokens);
 
 	const model: Model<Api> = {
@@ -222,8 +202,8 @@ function toModel(entry: MagpieModel, baseUrl: string): Model<Api> | null {
 		provider: PROVIDER_ID,
 		baseUrl,
 		reasoning,
-		input: modalities?.includes("image") ? ["text", "image"] : ["text"],
-		contextWindow: window ?? DEFAULT_CONTEXT_WINDOW,
+		input: input?.includes("image") ? ["text", "image"] : ["text"],
+		contextWindow: contextWindow ?? DEFAULT_CONTEXT_WINDOW,
 		maxTokens: positive(entry.max_output_tokens) ?? DEFAULT_MAX_TOKENS,
 		cost: {
 			input: perMillion(entry.pricing?.prompt),
@@ -241,20 +221,10 @@ function toModel(entry: MagpieModel, baseUrl: string): Model<Api> | null {
 
 function thinkingLevelMap(levels: string[]): Record<PiLevel, string | null> {
 	const known = new Set(levels);
-	const map: Record<PiLevel, string | null> = {
-		off: "none",
-		minimal: null,
-		low: null,
-		medium: null,
-		high: null,
-		xhigh: null,
-		max: null,
-	};
-	for (const level of PI_LEVELS) {
-		// "off" stays "none": magpie clears the reasoning ask for it.
-		if (level !== "off" && known.has(level)) map[level] = level;
-	}
-	return map;
+	// "off" stays "none": magpie clears the reasoning ask for it.
+	return Object.fromEntries(
+		PI_LEVELS.map((level) => [level, level === "off" ? "none" : known.has(level) ? level : null]),
+	) as Record<PiLevel, string | null>;
 }
 
 function reasoningLevels(entry: MagpieModel): string[] {
@@ -275,7 +245,9 @@ function reasoningLevels(entry: MagpieModel): string[] {
 function normalizeBaseUrl(input: string | undefined): string | undefined {
 	const raw = input?.trim();
 	if (!raw) return undefined;
-	const scheme = raw.includes("://") ? "" : looksLocal(raw) ? "http://" : "https://";
+	// A bare host is local when it names a loopback spelling; anything else
+	// is assumed to be a public gateway and gets https.
+	const scheme = raw.includes("://") ? "" : isLoopback(raw) ? "http://" : "https://";
 	let parsed: URL;
 	try {
 		parsed = new URL(scheme + raw);
@@ -290,20 +262,11 @@ function normalizeBaseUrl(input: string | undefined): string | undefined {
 	return parsed.toString().replace(/\/+$/, "");
 }
 
-function looksLocal(value: string): boolean {
-	return /^(localhost|127\.|0\.0\.0\.0|\[?::1\]?)(:\d+)?($|\/)/i.test(value);
-}
-
+/** Whether a URL points at this machine, i.e. a gateway that takes any key. */
 function isLoopback(value: string): boolean {
 	try {
 		const host = new URL(value.includes("://") ? value : `http://${value}`).hostname;
-		return (
-			host === "localhost" ||
-			host === "127.0.0.1" ||
-			host === "0.0.0.0" ||
-			host === "::1" ||
-			host === "[::1]"
-		);
+		return host === "localhost" || host === "0.0.0.0" || host === "[::1]" || host.startsWith("127.");
 	} catch {
 		return false;
 	}
@@ -318,13 +281,4 @@ function perMillion(perToken: string | undefined): number {
 
 function positive(value: number | undefined): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
-function abortWithTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal | undefined {
-	const any = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
-	const timeout = (AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal }).timeout;
-	if (typeof any === "function" && typeof timeout === "function") {
-		return signal ? any([signal, timeout(ms)]) : timeout(ms);
-	}
-	return signal;
 }
