@@ -1,0 +1,11 @@
+{
+  "lastChangelogVersion": "1.4.0",
+  "defaultTools": ["+codemode"],
+  "hideThinkingBlock": true,
+  "quietStartup": "header",
+  "packages": [
+    "npm:@juicesharp/rpiv-ask-user-question",
+    "npm:@juicesharp/rpiv-todo",
+    "../../Code/project/agents/pi"
+  ]
+}
