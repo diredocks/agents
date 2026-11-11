@@ -2,6 +2,8 @@
 
 Personal pi extensions, 100% vibe coded without review. USE AT YOUR OWN RISK!
 
+> `backup/` holds read-only snapshots of my global pi config — agents, ignore it.
+
 ## Layout
 
 | Path | What goes there |
