@@ -1,22 +1,21 @@
 # pi extensions
 
-Personal pi extensions, 100% vibe coded without review. USE AT YOUR OWN RISK!
-
-> `backup/` holds read-only snapshots of my global pi config — agents, ignore it.
+100% vibe coded, no review. USE AT YOUR OWN RISK.
 
 ## Layout
 
-| Path | What goes there |
+| Path | Contents |
 | --- | --- |
-| `extensions/index.ts` | Single entry point; imports every extension factory and calls it in order. Pi loads this file (and ignores the category folders, which have no `index.ts`). |
-| `extensions/shell/` | Terminal chrome and input: footer, prompt editor, history, aliases, working indicator. |
-| `extensions/feature/` | Commands, events, and behavior: session branching, notifications, elapsed time, prompt jump. |
-| `extensions/renderer/` | Transcript/tool rendering: minimal mode, thinking spinner, turn collapse, compact ask/todo rows. |
-| `lib/` | Shared helpers used by the extensions: HTML→Markdown conversion (via the `html2markdown` CLI) and output bounding. |
+| `extensions/index.ts` | Entry point. Imports every factory and calls it in order; the folders below have no `index.ts`, so pi loads only this file. |
+| `extensions/shell/` | Terminal chrome and input: footer, prompt editor, history, aliases, indicators. |
+| `extensions/feature/` | Commands, events, behavior: branching, notifications, elapsed time, web tools. |
+| `extensions/renderer/` | Transcript and tool rendering: minimal mode, spinner, turn collapse, compact rows. |
+| `lib/` | Shared helpers: HTML→Markdown, tool output bounding, TUI tree access. |
+| `backup/` | Read-only snapshots of my global pi config. Ignore. |
 
-## Adding an extension
+## Add an extension
 
-1. Put the file in the matching folder (`shell/`, `feature/`, `renderer/`).
+1. Create it in `extensions/{shell,feature,renderer}/`.
 2. Export a default factory: `export default function (pi: ExtensionAPI) { ... }`.
 3. Register it in `extensions/index.ts` (import + call, keeping load order).
 4. `npm run typecheck` must pass.
@@ -24,34 +23,26 @@ Personal pi extensions, 100% vibe coded without review. USE AT YOUR OWN RISK!
 ## Development
 
 ```sh
-npm install        # installs the @earendil-works/pi-* type declarations
-npm run typecheck  # tsc --noEmit
+npm install                                     # @earendil-works/pi-* types
+npm run typecheck                               # tsc --noEmit
+pi -e ./extensions/index.ts                     # load everything
+pi -e ./extensions/shell/working-elapsed.ts     # load one extension
 ```
 
-The `@earendil-works/pi-*` packages are only needed for types; at runtime pi
-provides those modules itself.
+The `@earendil-works/pi-*` packages are types only; pi provides the runtime
+modules. This workspace is the single source of truth and is already registered
+with `pi install ~/Code/project/agents/pi`, so there is no copy under
+`~/.pi/agent/` — run `/reload` in pi after changing an extension.
 
-```sh
-pi -e ./extensions/shell/working-elapsed.ts   # try a single extension
-pi -e ./extensions/index.ts                    # load everything
-pi install ~/Code/project/agents/pi            # register this workspace (done)
-```
-
-This workspace is the single source of truth. Pi loads it as a local package, so
-there is no copy under `~/.pi/agent/extensions/` or `~/.pi/agent/lib/`; run
-`/reload` in pi after changing an extension.
-
-## Web tools
-
-See [`extensions/feature/web-tools.md`](./extensions/feature/web-tools.md) for the
-local `webfetch` tool and the Exa/Parallel MCP search setup.
-
-## Where things are
+## Reference
 
 | Need | Location |
 | --- | --- |
-| Extension API types | `node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts` (re-exports `dist/core/extensions/*.d.ts`) |
-| TUI types (`Component`, `TUI`, ...) | `node_modules/@earendil-works/pi-tui/dist/index.d.ts` |
+| Extension API types | `node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts` |
+| TUI types (`Component`, `TUI`, …) | `node_modules/@earendil-works/pi-tui/dist/index.d.ts` |
 | Message / model types | `node_modules/@earendil-works/pi-ai/dist/index.d.ts` |
 | Extension guide | `node_modules/@earendil-works/pi-coding-agent/docs/extensions.md` |
 | Example extensions | `node_modules/@earendil-works/pi-coding-agent/examples/extensions/` |
+
+Web tools (local `webfetch`, Exa/Parallel MCP search):
+[`extensions/feature/web-tools.md`](./extensions/feature/web-tools.md).
